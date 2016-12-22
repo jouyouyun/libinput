@@ -135,4 +135,19 @@ model quirks hwdb for instructions.
 This property must not be used for any other purpose, no specific behavior
 is guaranteed.
 
+@subsection model_specific_configuration_huion_tablets Huion PenTablet without BTN_TOOL_PEN proximity events
+
+The property <b>LIBINPUT_MODEL_HUION_TABLET_NO_PROXIMITY_OUT</b> may be set
+by a user in a local hwdb file. This property designates the HUION PenTablet
+to be buggy, it is missing proximity out events when the tool goes out of
+detectable range. The tablet appears as if permanently in range, even when
+not actively sending events. If the above property is set, libinput adjusts
+its behavior to work around this bug.
+
+The tablet cannot be detected automatically by libinput because HUION
+tablets reuse USB IDs.  Local configuration is required to set this
+property. Refer to the libinput model quirks hwdb for instructions.
+
+This property must not be used for any other purpose, no specific behavior
+is guaranteed.
 */

@@ -98,6 +98,16 @@ static int events[] = {
 	-1, -1,
 };
 
+static const char udev_rule[] =
+"ACTION==\"remove\", GOTO=\"huion_end\"\n"
+"KERNEL!=\"event*\", GOTO=\"huion_end\"\n"
+"ENV{ID_INPUT_TABLET}==\"\", GOTO=\"huion_end\"\n"
+"\n"
+"ATTRS{name}==\"litest HUION PenTablet Pen\","
+"    ENV{LIBINPUT_MODEL_HUION_TABLET_NO_PROXIMITY_OUT}=\"1\"\n"
+"\n"
+"LABEL=\"huion_end\"";
+
 struct litest_test_device litest_huion_tablet_device = {
 	.type = LITEST_HUION_TABLET,
 	.features = LITEST_TABLET,
@@ -109,4 +119,5 @@ struct litest_test_device litest_huion_tablet_device = {
 	.id = &input_id,
 	.events = events,
 	.absinfo = absinfo,
+	.udev_rule = udev_rule,
 };
