@@ -475,4 +475,15 @@ strv_free(char **strv) {
 	free (strv);
 }
 
+static inline struct timeval
+time2timeval(uint64_t time)
+{
+	struct timeval tv;
+
+	tv.tv_sec = time / ms2us(1000);
+	tv.tv_usec = time % ms2us(1000);
+
+	return tv;
+}
+
 #endif /* LIBINPUT_UTIL_H */
