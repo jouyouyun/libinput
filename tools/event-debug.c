@@ -112,6 +112,15 @@ print_event_header(struct libinput_event *ev)
 	case LIBINPUT_EVENT_GESTURE_PINCH_END:
 		type = "GESTURE_PINCH_END";
 		break;
+	case LIBINPUT_EVENT_GESTURE_TAP_BEGIN:
+		type = "GESTURE_TAP_BEGIN";
+		break;
+	case LIBINPUT_EVENT_GESTURE_TAP_UPDATE:
+		type = "GESTURE_TAP_UPDATE";
+		break;
+	case LIBINPUT_EVENT_GESTURE_TAP_END:
+		type = "GESTURE_TAP_END";
+		break;
 	case LIBINPUT_EVENT_TABLET_TOOL_AXIS:
 		type = "TABLET_TOOL_AXIS";
 		break;
@@ -593,6 +602,7 @@ print_gesture_event_without_coords(struct libinput_event *ev)
 	type = libinput_event_get_type(ev);
 
 	if (type == LIBINPUT_EVENT_GESTURE_SWIPE_END ||
+	    type == LIBINPUT_EVENT_GESTURE_TAP_END ||
 	    type == LIBINPUT_EVENT_GESTURE_PINCH_END)
 	    cancelled = libinput_event_gesture_get_cancelled(t);
 
@@ -768,6 +778,15 @@ handle_and_print_events(struct libinput *li)
 			print_gesture_event_with_coords(ev);
 			break;
 		case LIBINPUT_EVENT_GESTURE_PINCH_END:
+			print_gesture_event_without_coords(ev);
+			break;
+		case LIBINPUT_EVENT_GESTURE_TAP_BEGIN:
+			print_gesture_event_without_coords(ev);
+			break;
+		case LIBINPUT_EVENT_GESTURE_TAP_UPDATE:
+			print_gesture_event_with_coords(ev);
+			break;
+		case LIBINPUT_EVENT_GESTURE_TAP_END:
 			print_gesture_event_without_coords(ev);
 			break;
 		case LIBINPUT_EVENT_TABLET_TOOL_AXIS:

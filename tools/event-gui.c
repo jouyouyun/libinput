@@ -89,6 +89,10 @@ struct window {
 	} pinch;
 
 	struct {
+		int nfingers;
+	} tap;
+
+	struct {
 		double x, y;
 		double x_in, y_in;
 		double x_down, y_down;
@@ -165,6 +169,8 @@ draw_gestures(struct window *w, cairo_t *cr)
 		cairo_arc(cr, -offset, offset, 20, 0, 2 * M_PI);
 		cairo_fill(cr);
 	}
+
+	// TODO: draw tap gesture
 
 	cairo_set_source_rgb(cr, 0, 0, 0);
 	cairo_arc(cr, offset, -offset, 20, 0, 2 * M_PI);
@@ -835,6 +841,13 @@ handle_event_libinput(GIOChannel *source, GIOCondition condition, gpointer data)
 		case LIBINPUT_EVENT_GESTURE_PINCH_END:
 			handle_event_pinch(ev, w);
 			break;
+		case LIBINPUT_EVENT_GESTURE_TAP_BEGIN:
+		case LIBINPUT_EVENT_GESTURE_TAP_UPDATE:
+		case LIBINPUT_EVENT_GESTURE_TAP_END: {
+			struct libinput_event_gesture *g = libinput_event_get_gesture_event(ev);
+			w->tap.nfingers = libinput_event_gesture_get_finger_count(g);
+			break;
+		}
 		case LIBINPUT_EVENT_TABLET_TOOL_AXIS:
 		case LIBINPUT_EVENT_TABLET_TOOL_PROXIMITY:
 		case LIBINPUT_EVENT_TABLET_TOOL_TIP:

@@ -321,7 +321,10 @@ libinput_event_get_gesture_event(struct libinput_event *event)
 			   LIBINPUT_EVENT_GESTURE_SWIPE_END,
 			   LIBINPUT_EVENT_GESTURE_PINCH_BEGIN,
 			   LIBINPUT_EVENT_GESTURE_PINCH_UPDATE,
-			   LIBINPUT_EVENT_GESTURE_PINCH_END);
+			   LIBINPUT_EVENT_GESTURE_PINCH_END,
+			   LIBINPUT_EVENT_GESTURE_TAP_BEGIN,
+			   LIBINPUT_EVENT_GESTURE_TAP_UPDATE,
+			   LIBINPUT_EVENT_GESTURE_TAP_END);
 
 	return (struct libinput_event_gesture *) event;
 }
@@ -804,7 +807,10 @@ libinput_event_gesture_get_time(struct libinput_event_gesture *event)
 			   LIBINPUT_EVENT_GESTURE_PINCH_END,
 			   LIBINPUT_EVENT_GESTURE_SWIPE_BEGIN,
 			   LIBINPUT_EVENT_GESTURE_SWIPE_UPDATE,
-			   LIBINPUT_EVENT_GESTURE_SWIPE_END);
+			   LIBINPUT_EVENT_GESTURE_SWIPE_END,
+			   LIBINPUT_EVENT_GESTURE_TAP_BEGIN,
+			   LIBINPUT_EVENT_GESTURE_TAP_UPDATE,
+			   LIBINPUT_EVENT_GESTURE_TAP_END);
 
 	return us2ms(event->time);
 }
@@ -820,7 +826,10 @@ libinput_event_gesture_get_time_usec(struct libinput_event_gesture *event)
 			   LIBINPUT_EVENT_GESTURE_PINCH_END,
 			   LIBINPUT_EVENT_GESTURE_SWIPE_BEGIN,
 			   LIBINPUT_EVENT_GESTURE_SWIPE_UPDATE,
-			   LIBINPUT_EVENT_GESTURE_SWIPE_END);
+			   LIBINPUT_EVENT_GESTURE_SWIPE_END,
+			   LIBINPUT_EVENT_GESTURE_TAP_BEGIN,
+			   LIBINPUT_EVENT_GESTURE_TAP_UPDATE,
+			   LIBINPUT_EVENT_GESTURE_TAP_END);
 
 	return event->time;
 }
@@ -836,7 +845,10 @@ libinput_event_gesture_get_finger_count(struct libinput_event_gesture *event)
 			   LIBINPUT_EVENT_GESTURE_PINCH_END,
 			   LIBINPUT_EVENT_GESTURE_SWIPE_BEGIN,
 			   LIBINPUT_EVENT_GESTURE_SWIPE_UPDATE,
-			   LIBINPUT_EVENT_GESTURE_SWIPE_END);
+			   LIBINPUT_EVENT_GESTURE_SWIPE_END,
+			   LIBINPUT_EVENT_GESTURE_TAP_BEGIN,
+			   LIBINPUT_EVENT_GESTURE_TAP_UPDATE,
+			   LIBINPUT_EVENT_GESTURE_TAP_END);
 
 	return event->finger_count;
 }
@@ -848,7 +860,8 @@ libinput_event_gesture_get_cancelled(struct libinput_event_gesture *event)
 			   event->base.type,
 			   0,
 			   LIBINPUT_EVENT_GESTURE_PINCH_END,
-			   LIBINPUT_EVENT_GESTURE_SWIPE_END);
+			   LIBINPUT_EVENT_GESTURE_SWIPE_END,
+			   LIBINPUT_EVENT_GESTURE_TAP_END);
 
 	return event->cancelled;
 }
@@ -864,7 +877,10 @@ libinput_event_gesture_get_dx(struct libinput_event_gesture *event)
 			   LIBINPUT_EVENT_GESTURE_PINCH_END,
 			   LIBINPUT_EVENT_GESTURE_SWIPE_BEGIN,
 			   LIBINPUT_EVENT_GESTURE_SWIPE_UPDATE,
-			   LIBINPUT_EVENT_GESTURE_SWIPE_END);
+			   LIBINPUT_EVENT_GESTURE_SWIPE_END,
+			   LIBINPUT_EVENT_GESTURE_TAP_BEGIN,
+			   LIBINPUT_EVENT_GESTURE_TAP_UPDATE,
+			   LIBINPUT_EVENT_GESTURE_TAP_END);
 
 	return event->delta.x;
 }
@@ -880,7 +896,10 @@ libinput_event_gesture_get_dy(struct libinput_event_gesture *event)
 			   LIBINPUT_EVENT_GESTURE_PINCH_END,
 			   LIBINPUT_EVENT_GESTURE_SWIPE_BEGIN,
 			   LIBINPUT_EVENT_GESTURE_SWIPE_UPDATE,
-			   LIBINPUT_EVENT_GESTURE_SWIPE_END);
+			   LIBINPUT_EVENT_GESTURE_SWIPE_END,
+			   LIBINPUT_EVENT_GESTURE_TAP_BEGIN,
+			   LIBINPUT_EVENT_GESTURE_TAP_UPDATE,
+			   LIBINPUT_EVENT_GESTURE_TAP_END);
 
 	return event->delta.y;
 }
@@ -897,7 +916,10 @@ libinput_event_gesture_get_dx_unaccelerated(
 			   LIBINPUT_EVENT_GESTURE_PINCH_END,
 			   LIBINPUT_EVENT_GESTURE_SWIPE_BEGIN,
 			   LIBINPUT_EVENT_GESTURE_SWIPE_UPDATE,
-			   LIBINPUT_EVENT_GESTURE_SWIPE_END);
+			   LIBINPUT_EVENT_GESTURE_SWIPE_END,
+			   LIBINPUT_EVENT_GESTURE_TAP_BEGIN,
+			   LIBINPUT_EVENT_GESTURE_TAP_UPDATE,
+			   LIBINPUT_EVENT_GESTURE_TAP_END);
 
 	return event->delta_unaccel.x;
 }
@@ -914,7 +936,10 @@ libinput_event_gesture_get_dy_unaccelerated(
 			   LIBINPUT_EVENT_GESTURE_PINCH_END,
 			   LIBINPUT_EVENT_GESTURE_SWIPE_BEGIN,
 			   LIBINPUT_EVENT_GESTURE_SWIPE_UPDATE,
-			   LIBINPUT_EVENT_GESTURE_SWIPE_END);
+			   LIBINPUT_EVENT_GESTURE_SWIPE_END,
+			   LIBINPUT_EVENT_GESTURE_TAP_BEGIN,
+			   LIBINPUT_EVENT_GESTURE_TAP_UPDATE,
+			   LIBINPUT_EVENT_GESTURE_TAP_END);
 
 	return event->delta_unaccel.y;
 }
@@ -2590,6 +2615,30 @@ gesture_notify_pinch_end(struct libinput_device *device,
 		       finger_count, cancelled, &zero, &zero, scale, 0.0);
 }
 
+void
+gesture_notify_tap(struct libinput_device *device,
+		     uint64_t time,
+		     enum libinput_event_type type,
+		     int finger_count)
+{
+	const struct normalized_coords zero = { 0.0, 0.0 };
+	gesture_notify(device, time, type, finger_count, 0, &zero, &zero,
+		       0.0, 0.0);
+}
+
+void
+gesture_notify_tap_end(struct libinput_device *device,
+			 uint64_t time,
+			 int finger_count,
+			 int cancelled)
+{
+	const struct normalized_coords zero = { 0.0, 0.0 };
+
+	gesture_notify(device, time, LIBINPUT_EVENT_GESTURE_TAP_END,
+		       finger_count, cancelled, &zero, &zero, 0.0, 0.0);
+}
+
+
 static inline const char *
 event_type_to_str(enum libinput_event_type type)
 {
@@ -2619,6 +2668,9 @@ event_type_to_str(enum libinput_event_type type)
 	CASE_RETURN_STRING(LIBINPUT_EVENT_GESTURE_PINCH_BEGIN);
 	CASE_RETURN_STRING(LIBINPUT_EVENT_GESTURE_PINCH_UPDATE);
 	CASE_RETURN_STRING(LIBINPUT_EVENT_GESTURE_PINCH_END);
+	CASE_RETURN_STRING(LIBINPUT_EVENT_GESTURE_TAP_BEGIN);
+	CASE_RETURN_STRING(LIBINPUT_EVENT_GESTURE_TAP_UPDATE);
+	CASE_RETURN_STRING(LIBINPUT_EVENT_GESTURE_TAP_END);
 	case LIBINPUT_EVENT_NONE:
 		abort();
 	}
@@ -3040,7 +3092,10 @@ libinput_event_gesture_get_base_event(struct libinput_event_gesture *event)
 			   LIBINPUT_EVENT_GESTURE_SWIPE_END,
 			   LIBINPUT_EVENT_GESTURE_PINCH_BEGIN,
 			   LIBINPUT_EVENT_GESTURE_PINCH_UPDATE,
-			   LIBINPUT_EVENT_GESTURE_PINCH_END);
+			   LIBINPUT_EVENT_GESTURE_PINCH_END,
+			   LIBINPUT_EVENT_GESTURE_TAP_BEGIN,
+			   LIBINPUT_EVENT_GESTURE_TAP_UPDATE,
+			   LIBINPUT_EVENT_GESTURE_TAP_END);
 
 	return &event->base;
 }

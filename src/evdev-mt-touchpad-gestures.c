@@ -31,6 +31,7 @@
 
 #define DEFAULT_GESTURE_SWITCH_TIMEOUT ms2us(100)
 #define DEFAULT_GESTURE_2FG_SCROLL_TIMEOUT ms2us(150)
+#define DEFAULT_GESTURE_TAP_TIMEOUT ms2us(200)
 
 static inline const char*
 gesture_state_to_str(enum tp_gesture_state state)
@@ -41,6 +42,7 @@ gesture_state_to_str(enum tp_gesture_state state)
 	CASE_RETURN_STRING(GESTURE_STATE_SCROLL);
 	CASE_RETURN_STRING(GESTURE_STATE_PINCH);
 	CASE_RETURN_STRING(GESTURE_STATE_SWIPE);
+	CASE_RETURN_STRING(GESTURE_STATE_TAP);
 	}
 	return NULL;
 }
@@ -120,6 +122,11 @@ tp_gesture_start(struct tp_dispatch *tp, uint64_t time)
 				     LIBINPUT_EVENT_GESTURE_SWIPE_BEGIN,
 				     tp->gesture.finger_count,
 				     &zero, &zero);
+		break;
+	case GESTURE_STATE_TAP:
+		gesture_notify_tap(&tp->device->base, time,
+				     LIBINPUT_EVENT_GESTURE_TAP_BEGIN,
+				     tp->gesture.finger_count);
 		break;
 	}
 
@@ -354,8 +361,17 @@ tp_gesture_handle_state_unknown(struct tp_dispatch *tp, uint64_t time)
 	/* Else wait for both fingers to have moved */
 	dir1 = tp_gesture_get_direction(tp, first, tp->gesture.finger_count);
 	dir2 = tp_gesture_get_direction(tp, second, tp->gesture.finger_count);
-	if (dir1 == UNDEFINED_DIRECTION || dir2 == UNDEFINED_DIRECTION)
+	if (dir1 == UNDEFINED_DIRECTION || dir2 == UNDEFINED_DIRECTION) {
+		struct normalized_coords delta, unaccel;
+		unaccel = tp_get_average_touches_delta(tp);
+		delta = tp_filter_motion(tp, &unaccel, time);
+		if (normalized_is_zero(delta) && normalized_is_zero(unaccel) &&
+			time < (tp->gesture.initial_time + DEFAULT_GESTURE_TAP_TIMEOUT)) {
+			// TODO: check tap whether enabled
+			return GESTURE_STATE_TAP;
+		}
 		return GESTURE_STATE_UNKNOWN;
+	}
 
 	/* If both touches are moving in the same direction assume
 	 * scroll or swipe */
@@ -416,6 +432,52 @@ tp_gesture_handle_state_swipe(struct tp_dispatch *tp, uint64_t time)
 	}
 
 	return GESTURE_STATE_SWIPE;
+}
+
+static enum tp_gesture_state
+tp_gesture_handle_state_tap(struct tp_dispatch *tp, uint64_t time)
+{
+	struct normalized_coords delta, unaccel;
+	struct tp_touch *first = tp->gesture.touches[0],
+			*second = tp->gesture.touches[1];
+	int dir1, dir2;
+
+	if (time > (tp->gesture.initial_time + DEFAULT_GESTURE_TAP_TIMEOUT)) {
+		goto out;
+	}
+
+	unaccel = tp_get_average_touches_delta(tp);
+	delta = tp_filter_motion(tp, &unaccel, time);
+	if (normalized_is_zero(delta) && normalized_is_zero(unaccel)) {
+		tp_gesture_start(tp, time);
+		gesture_notify_tap(&tp->device->base, time,
+				LIBINPUT_EVENT_GESTURE_TAP_UPDATE,
+				tp->gesture.finger_count);
+		return GESTURE_STATE_TAP;
+	}
+
+out:
+	// TODO: optimize structure
+
+	/* Else wait for both fingers to have moved */
+	dir1 = tp_gesture_get_direction(tp, first, tp->gesture.finger_count);
+	dir2 = tp_gesture_get_direction(tp, second, tp->gesture.finger_count);
+
+	/* If both touches are moving in the same direction assume
+	 * scroll or swipe */
+	if (tp_gesture_same_directions(dir1, dir2)) {
+		if (tp->gesture.finger_count == 2) {
+			tp_gesture_set_scroll_buildup(tp);
+			return GESTURE_STATE_SCROLL;
+		} else if (tp->gesture.enabled) {
+			return GESTURE_STATE_SWIPE;
+		}
+	} else {
+		tp_gesture_init_pinch(tp);
+		return GESTURE_STATE_PINCH;
+	}
+
+	return GESTURE_STATE_UNKNOWN;
 }
 
 static enum tp_gesture_state
@@ -480,6 +542,10 @@ tp_gesture_post_gesture(struct tp_dispatch *tp, uint64_t time)
 	if (tp->gesture.state == GESTURE_STATE_PINCH)
 		tp->gesture.state =
 			tp_gesture_handle_state_pinch(tp, time);
+
+	if (tp->gesture.state == GESTURE_STATE_TAP)
+		tp->gesture.state =
+			tp_gesture_handle_state_tap(tp, time);
 
 	log_debug(tp_libinput_context(tp),
 		  "gesture state: %s → %s\n",
@@ -557,6 +623,12 @@ tp_gesture_end(struct tp_dispatch *tp, uint64_t time, bool cancelled)
 		break;
 	case GESTURE_STATE_SWIPE:
 		gesture_notify_swipe_end(&tp->device->base,
+					 time,
+					 tp->gesture.finger_count,
+					 cancelled);
+		break;
+	case GESTURE_STATE_TAP:
+		gesture_notify_tap_end(&tp->device->base,
 					 time,
 					 tp->gesture.finger_count,
 					 cancelled);

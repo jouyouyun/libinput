@@ -566,6 +566,18 @@ gesture_notify_pinch_end(struct libinput_device *device,
 			 int cancelled);
 
 void
+gesture_notify_tap(struct libinput_device *device,
+			 uint64_t time,
+			 enum libinput_event_type type,
+			 int finger_count);
+
+void
+gesture_notify_tap_end(struct libinput_device *device,
+			 uint64_t time,
+			 int finger_count,
+			 int cancelled);
+
+void
 tablet_notify_axis(struct libinput_device *device,
 		   uint64_t time,
 		   struct libinput_tablet_tool *tool,
