@@ -34,6 +34,7 @@
 #include <math.h>
 #include <stdarg.h>
 #include <stdbool.h>
+#include <stddef.h>
 #include <stdio.h>
 #include <string.h>
 #include <time.h>
@@ -47,10 +48,28 @@
 #define VENDOR_ID_WACOM 0x56a
 #define VENDOR_ID_SYNAPTICS_SERIAL 0x002
 #define PRODUCT_ID_APPLE_KBD_TOUCHPAD 0x273
+#define PRODUCT_ID_APPLE_APPLETOUCH 0x21a
 #define PRODUCT_ID_SYNAPTICS_SERIAL 0x007
 
 /* The HW DPI rate we normalize to before calculating pointer acceleration */
 #define DEFAULT_MOUSE_DPI 1000
+#define DEFAULT_TRACKPOINT_RANGE 20
+#define DEFAULT_TRACKPOINT_SENSITIVITY 128
+
+#define ANSI_HIGHLIGHT		"\x1B[0;1;39m"
+#define ANSI_RED		"\x1B[0;31m"
+#define ANSI_GREEN		"\x1B[0;32m"
+#define ANSI_YELLOW		"\x1B[0;33m"
+#define ANSI_BLUE		"\x1B[0;34m"
+#define ANSI_MAGENTA		"\x1B[0;35m"
+#define ANSI_CYAN		"\x1B[0;36m"
+#define ANSI_BRIGHT_RED		"\x1B[0;31;1m"
+#define ANSI_BRIGHT_GREEN	"\x1B[0;32;1m"
+#define ANSI_BRIGHT_YELLOW	"\x1B[0;33;1m"
+#define ANSI_BRIGHT_BLUE	"\x1B[0;34;1m"
+#define ANSI_BRIGHT_MAGENTA	"\x1B[0;35;1m"
+#define ANSI_BRIGHT_CYAN	"\x1B[0;36;1m"
+#define ANSI_NORMAL		"\x1B[0m"
 
 #define CASE_RETURN_STRING(a) case a: return #a
 
@@ -69,28 +88,25 @@ void list_insert(struct list *list, struct list *elm);
 void list_remove(struct list *elm);
 bool list_empty(const struct list *list);
 
-#ifdef __GNUC__
-#define container_of(ptr, sample, member)				\
-	(__typeof__(sample))((char *)(ptr)	-			\
-		 ((char *)&(sample)->member - (char *)(sample)))
-#else
-#define container_of(ptr, sample, member)				\
-	(void *)((char *)(ptr)	-				        \
-		 ((char *)&(sample)->member - (char *)(sample)))
-#endif
+#define container_of(ptr, type, member)					\
+	(__typeof__(type) *)((char *)(ptr) -				\
+		 offsetof(__typeof__(type), member))
+
+#define list_first_entry(head, pos, member)				\
+	container_of((head)->next, __typeof__(*pos), member)
 
 #define list_for_each(pos, head, member)				\
-	for (pos = 0, pos = container_of((head)->next, pos, member);	\
+	for (pos = 0, pos = list_first_entry(head, pos, member);	\
 	     &pos->member != (head);					\
-	     pos = container_of(pos->member.next, pos, member))
+	     pos = list_first_entry(&pos->member, pos, member))
 
 #define list_for_each_safe(pos, tmp, head, member)			\
 	for (pos = 0, tmp = 0, 						\
-	     pos = container_of((head)->next, pos, member),		\
-	     tmp = container_of((pos)->member.next, tmp, member);	\
+	     pos = list_first_entry(head, pos, member),			\
+	     tmp = list_first_entry(&pos->member, tmp, member);		\
 	     &pos->member != (head);					\
 	     pos = tmp,							\
-	     tmp = container_of(pos->member.next, tmp, member))
+	     tmp = list_first_entry(&pos->member, tmp, member))
 
 #define NBITS(b) (b * 8)
 #define LONG_BITS (sizeof(long) * 8)
@@ -122,7 +138,32 @@ bool list_empty(const struct list *list);
 static inline void *
 zalloc(size_t size)
 {
-	return calloc(1, size);
+	void *p;
+
+	p = calloc(1, size);
+	if (!p)
+		abort();
+
+	return p;
+}
+
+/**
+ * strdup guaranteed to succeed. If the input string is NULL, the output
+ * string is NULL. If the input string is a string pointer, we strdup or
+ * abort on failure.
+ */
+static inline char*
+safe_strdup(const char *str)
+{
+	char *s;
+
+	if (!str)
+		return NULL;
+
+	s = strdup(str);
+	if (!s)
+		abort();
+	return s;
 }
 
 /* This bitfield helper implementation is taken from from libevdev-util.h,
@@ -336,10 +377,7 @@ matrix_to_relative(struct matrix *dest, const struct matrix *src)
  * upon success or -1 upon failure. In the case of failure the pointer is set
  * to NULL.
  */
-static inline int
-xasprintf(char **strp, const char *fmt, ...)
-	LIBINPUT_ATTRIBUTE_PRINTF(2, 3);
-
+LIBINPUT_ATTRIBUTE_PRINTF(2, 3)
 static inline int
 xasprintf(char **strp, const char *fmt, ...)
 {
@@ -376,6 +414,27 @@ int parse_mouse_wheel_click_angle_property(const char *prop);
 int parse_mouse_wheel_click_count_property(const char *prop);
 double parse_trackpoint_accel_property(const char *prop);
 bool parse_dimension_property(const char *prop, size_t *width, size_t *height);
+bool parse_calibration_property(const char *prop, float calibration[6]);
+bool parse_range_property(const char *prop, int *hi, int *lo);
+int parse_palm_pressure_property(const char *prop);
+int parse_palm_size_property(const char *prop);
+
+enum tpkbcombo_layout {
+	TPKBCOMBO_LAYOUT_UNKNOWN,
+	TPKBCOMBO_LAYOUT_BELOW,
+};
+bool parse_tpkbcombo_layout_poperty(const char *prop,
+				    enum tpkbcombo_layout *layout);
+
+enum switch_reliability {
+	RELIABILITY_UNKNOWN,
+	RELIABILITY_RELIABLE,
+	RELIABILITY_WRITE_OPEN,
+};
+
+bool
+parse_switch_reliability_property(const char *prop,
+				  enum switch_reliability *reliability);
 
 static inline uint64_t
 us(uint64_t us)
@@ -405,6 +464,12 @@ static inline uint32_t
 us2ms(uint64_t us)
 {
 	return (uint32_t)(us / 1000);
+}
+
+static inline uint64_t
+tv2us(const struct timeval *tv)
+{
+	return s2us(tv->tv_sec) + tv->tv_usec;
 }
 
 static inline bool

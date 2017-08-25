@@ -187,6 +187,7 @@ enum libinput_device_capability {
 	LIBINPUT_DEVICE_CAP_TABLET_TOOL = 3,
 	LIBINPUT_DEVICE_CAP_TABLET_PAD = 4,
 	LIBINPUT_DEVICE_CAP_GESTURE = 5,
+	LIBINPUT_DEVICE_CAP_SWITCH = 6,
 };
 
 /**
@@ -259,6 +260,12 @@ enum libinput_pointer_axis_source {
 	 * The event is caused by the motion of some device.
 	 */
 	LIBINPUT_POINTER_AXIS_SOURCE_CONTINUOUS,
+	/**
+	 * The event is caused by the tilting of a mouse wheel rather than
+	 * its rotation. This method is commonly used on mice without
+	 * separate horizontal scroll wheels.
+	 */
+	LIBINPUT_POINTER_AXIS_SOURCE_WHEEL_TILT,
 };
 
 /**
@@ -307,7 +314,7 @@ enum libinput_tablet_pad_strip_axis_source {
  * while a button is held down.
  *
  * @note The @ref libinput_tablet_tool_type can only describe the default physical
- * type of the device. For devices with adjustible physical properties
+ * type of the device. For devices with adjustable physical properties
  * the tool type remains the same, i.e. putting a Wacom stroke nib into a
  * classic pen leaves the tool type as @ref LIBINPUT_TABLET_TOOL_TYPE_PEN.
  */
@@ -329,7 +336,7 @@ enum libinput_tablet_tool_type {
  * LIBINPUT_DEVICE_CAP_TABLET_TOOL capability.
  *
  * The proximity of a tool is a binary state signalling whether the tool is
- * within detectable distance of the tablet device. A tool that is out of
+ * within a detectable distance of the tablet device. A tool that is out of
  * proximity cannot generate events.
  *
  * On some hardware a tool goes out of proximity when it ceases to touch the
@@ -592,6 +599,42 @@ libinput_tablet_pad_mode_group_get_user_data(
 			struct libinput_tablet_pad_mode_group *group);
 
 /**
+ * @ingroup device
+ *
+ * The state of a switch. The default state of a switch is @ref
+ * LIBINPUT_SWITCH_STATE_OFF and no event is sent to confirm a switch in the
+ * off position. If a switch is logically on during initialization, libinput
+ * sends an event of type @ref LIBINPUT_EVENT_SWITCH_TOGGLE with a state
+ * @ref LIBINPUT_SWITCH_STATE_ON.
+ */
+enum libinput_switch_state {
+	LIBINPUT_SWITCH_STATE_OFF = 0,
+	LIBINPUT_SWITCH_STATE_ON = 1,
+};
+
+/**
+ * @ingroup device
+ *
+ * The type of a switch.
+ */
+enum libinput_switch {
+	/**
+	 * The laptop lid was closed when the switch state is @ref
+	 * LIBINPUT_SWITCH_STATE_ON, or was opened when it is @ref
+	 * LIBINPUT_SWITCH_STATE_OFF.
+	 */
+	LIBINPUT_SWITCH_LID = 1,
+};
+
+/**
+ * @ingroup event_switch
+ * @struct libinput_event_switch
+ *
+ * A switch event representing a changed state in a switch.
+ */
+struct libinput_event_switch;
+
+/**
  * @ingroup base
  *
  * Event type for events returned by libinput_get_event().
@@ -749,6 +792,8 @@ enum libinput_event_type {
 	LIBINPUT_EVENT_GESTURE_TAP_BEGIN,
 	LIBINPUT_EVENT_GESTURE_TAP_UPDATE,
 	LIBINPUT_EVENT_GESTURE_TAP_END,
+
+	LIBINPUT_EVENT_SWITCH_TOGGLE = 900,
 };
 
 /**
@@ -888,6 +933,19 @@ libinput_event_get_tablet_pad_event(struct libinput_event *event);
 /**
  * @ingroup event
  *
+ * Return the switch event that is this input event. If the event type does
+ * not match the switch event types, this function returns NULL.
+ *
+ * The inverse of this function is libinput_event_switch_get_base_event().
+ *
+ * @return A switch event, or NULL for other events
+ */
+struct libinput_event_switch *
+libinput_event_get_switch_event(struct libinput_event *event);
+
+/**
+ * @ingroup event
+ *
  * Return the device event that is this input event. If the event type does
  * not match the device event types, this function returns NULL.
  *
@@ -917,6 +975,9 @@ libinput_event_device_notify_get_base_event(struct libinput_event_device_notify 
 /**
  * @ingroup event_keyboard
  *
+ * @note Timestamps may not always increase. See @ref event_timestamps for
+ * details.
+ *
  * @return The event time for this event
  */
 uint32_t
@@ -924,6 +985,9 @@ libinput_event_keyboard_get_time(struct libinput_event_keyboard *event);
 
 /**
  * @ingroup event_keyboard
+ *
+ * @note Timestamps may not always increase. See @ref event_timestamps for
+ * details.
  *
  * @return The event time for this event in microseconds
  */
@@ -980,6 +1044,9 @@ libinput_event_keyboard_get_seat_key_count(
 /**
  * @ingroup event_pointer
  *
+ * @note Timestamps may not always increase. See @ref event_timestamps for
+ * details.
+ *
  * @return The event time for this event
  */
 uint32_t
@@ -987,6 +1054,9 @@ libinput_event_pointer_get_time(struct libinput_event_pointer *event);
 
 /**
  * @ingroup event_pointer
+ *
+ * @note Timestamps may not always increase. See @ref event_timestamps for
+ * details.
  *
  * @return The event time for this event in microseconds
  */
@@ -1288,6 +1358,15 @@ libinput_event_pointer_get_axis_value(struct libinput_event_pointer *event,
  * The coordinate system is identical to the cursor movement, i.e. a
  * scroll value of 1 represents the equivalent relative motion of 1.
  *
+ * If the source is @ref LIBINPUT_POINTER_AXIS_SOURCE_WHEEL_TILT, no
+ * terminating event is guaranteed (though it may happen).
+ * Scrolling is in discrete steps and there is no physical equivalent for
+ * the value returned here. For backwards compatibility, the value returned
+ * by this function is identical to a single mouse wheel rotation by this
+ * device (see the documentation for @ref LIBINPUT_POINTER_AXIS_SOURCE_WHEEL
+ * above). Callers should not use this value but instead exclusively refer
+ * to the value returned by libinput_event_pointer_get_axis_value_discrete().
+ *
  * For pointer events that are not of type @ref LIBINPUT_EVENT_POINTER_AXIS,
  * this function returns 0.
  *
@@ -1336,6 +1415,9 @@ libinput_event_pointer_get_base_event(struct libinput_event_pointer *event);
 /**
  * @ingroup event_touch
  *
+ * @note Timestamps may not always increase. See @ref event_timestamps for
+ * details.
+ *
  * @return The event time for this event
  */
 uint32_t
@@ -1343,6 +1425,9 @@ libinput_event_touch_get_time(struct libinput_event_touch *event);
 
 /**
  * @ingroup event_touch
+ *
+ * @note Timestamps may not always increase. See @ref event_timestamps for
+ * details.
  *
  * @return The event time for this event in microseconds
  */
@@ -1500,6 +1585,9 @@ libinput_event_touch_get_base_event(struct libinput_event_touch *event);
 /**
  * @ingroup event_gesture
  *
+ * @note Timestamps may not always increase. See @ref event_timestamps for
+ * details.
+ *
  * @return The event time for this event
  */
 uint32_t
@@ -1507,6 +1595,9 @@ libinput_event_gesture_get_time(struct libinput_event_gesture *event);
 
 /**
  * @ingroup event_gesture
+ *
+ * @note Timestamps may not always increase. See @ref event_timestamps for
+ * details.
  *
  * @return The event time for this event in microseconds
  */
@@ -2007,7 +2098,7 @@ libinput_event_tablet_tool_get_distance(struct libinput_event_tablet_tool *event
  * If this axis does not exist on the current tool, this function returns 0.
  *
  * @param event The libinput tablet tool event
- * @return The current value of the the axis in degrees
+ * @return The current value of the axis in degrees
  */
 double
 libinput_event_tablet_tool_get_tilt_x(struct libinput_event_tablet_tool *event);
@@ -2236,6 +2327,9 @@ libinput_event_tablet_tool_get_seat_button_count(struct libinput_event_tablet_to
 /**
  * @ingroup event_tablet
  *
+ * @note Timestamps may not always increase. See @ref event_timestamps for
+ * details.
+ *
  * @param event The libinput tablet tool event
  * @return The event time for this event
  */
@@ -2244,6 +2338,9 @@ libinput_event_tablet_tool_get_time(struct libinput_event_tablet_tool *event);
 
 /**
  * @ingroup event_tablet
+ *
+ * @note Timestamps may not always increase. See @ref event_timestamps for
+ * details.
  *
  * @param event The libinput tablet tool event
  * @return The event time for this event in microseconds
@@ -2669,7 +2766,10 @@ struct libinput_tablet_pad_mode_group *
 libinput_event_tablet_pad_get_mode_group(struct libinput_event_tablet_pad *event);
 
 /**
- * @ingroup event_tablet
+ * @ingroup event_tablet_pad
+ *
+ * @note Timestamps may not always increase. See @ref event_timestamps for
+ * details.
  *
  * @param event The libinput tablet pad event
  * @return The event time for this event
@@ -2680,11 +2780,84 @@ libinput_event_tablet_pad_get_time(struct libinput_event_tablet_pad *event);
 /**
  * @ingroup event_tablet_pad
  *
+ * @note Timestamps may not always increase. See @ref event_timestamps for
+ * details.
+ *
  * @param event The libinput tablet pad event
  * @return The event time for this event in microseconds
  */
 uint64_t
 libinput_event_tablet_pad_get_time_usec(struct libinput_event_tablet_pad *event);
+
+/**
+ * @defgroup event_switch Switch events
+ *
+ * Events that come from switch devices.
+ */
+
+/**
+ * @ingroup event_switch
+ *
+ * Return the switch that triggered this event.
+ * For pointer events that are not of type @ref
+ * LIBINPUT_EVENT_SWITCH_TOGGLE, this function returns 0.
+ *
+ * @note It is an application bug to call this function for events other than
+ * @ref LIBINPUT_EVENT_SWITCH_TOGGLE.
+ *
+ * @param event The libinput switch event
+ * @return The switch triggering this event
+ */
+enum libinput_switch
+libinput_event_switch_get_switch(struct libinput_event_switch *event);
+
+/**
+ * @ingroup event_switch
+ *
+ * Return the switch state that triggered this event.
+ * For switch events that are not of type @ref
+ * LIBINPUT_EVENT_SWITCH_TOGGLE, this function returns 0.
+ *
+ * @note It is an application bug to call this function for events other than
+ * @ref LIBINPUT_EVENT_SWITCH_TOGGLE.
+ *
+ * @param event The libinput switch event
+ * @return The switch state triggering this event
+ */
+enum libinput_switch_state
+libinput_event_switch_get_switch_state(struct libinput_event_switch *event);
+
+/**
+ * @ingroup event_switch
+ *
+ * @return The generic libinput_event of this event
+ */
+struct libinput_event *
+libinput_event_switch_get_base_event(struct libinput_event_switch *event);
+
+/**
+ * @ingroup event_switch
+ *
+ * @note Timestamps may not always increase. See @ref event_timestamps for
+ * details.
+ *
+ * @param event The libinput switch event
+ * @return The event time for this event
+ */
+uint32_t
+libinput_event_switch_get_time(struct libinput_event_switch *event);
+
+/**
+ * @ingroup event_switch
+ *
+ * @note Timestamps may not always increase. See @ref event_timestamps for
+ * details.
+ *
+ * @param event The libinput switch event
+ * @return The event time for this event in microseconds
+ */
+uint64_t
+libinput_event_switch_get_time_usec(struct libinput_event_switch *event);
 
 /**
  * @defgroup base Initialization and manipulation of libinput contexts
@@ -2971,6 +3144,7 @@ libinput_ref(struct libinput *libinput);
  * (e.g. a libinput_device). When libinput_unref() returns
  * NULL, the caller must consider any resources related to that context
  * invalid. See https://bugs.freedesktop.org/show_bug.cgi?id=91872.
+ *
  * Example code:
  * @code
  * li = libinput_path_create_context(&interface, NULL);
@@ -3363,6 +3537,14 @@ libinput_device_get_id_vendor(struct libinput_device *device);
  * beyond the boundaries of this output. An absolute device has its input
  * coordinates mapped to the extents of this output.
  *
+ * @note <b>Use of this function is discouraged.</b> Its return value is not
+ * precisely defined and may not be understood by the caller or may be
+ * insufficient to map the device. Instead, the system configuration could
+ * set a udev property the caller understands and interprets correctly. The
+ * caller could then obtain device with libinput_device_get_udev_device()
+ * and query it for this property. For more complex cases, the caller
+ * must implement monitor-to-device association heuristics.
+ *
  * @return The name of the output this device is mapped to, or NULL if no
  * output is set
  */
@@ -3398,7 +3580,7 @@ libinput_device_get_seat(struct libinput_device *device);
  * device and adding it to the new seat.
  *
  * This command is identical to physically unplugging the device, then
- * re-plugging it as member of the new seat. libinput will generate a
+ * re-plugging it as a member of the new seat. libinput will generate a
  * @ref LIBINPUT_EVENT_DEVICE_REMOVED event and this @ref libinput_device is
  * considered removed from the context; it will not generate further events
  * and will be freed when the refcount reaches zero.
@@ -4249,6 +4431,10 @@ libinput_device_config_send_events_get_default_mode(struct libinput_device *devi
  * @param device The device to configure
  *
  * @return 0 if the device is not accelerated, nonzero if it is accelerated
+ *
+ * @see libinput_device_config_accel_set_speed
+ * @see libinput_device_config_accel_get_speed
+ * @see libinput_device_config_accel_get_default_speed
  */
 int
 libinput_device_config_accel_is_available(struct libinput_device *device);
@@ -4268,6 +4454,10 @@ libinput_device_config_accel_is_available(struct libinput_device *device);
  * @param speed The normalized speed, in a range of [-1, 1]
  *
  * @return A config status code
+ *
+ * @see libinput_device_config_accel_is_available
+ * @see libinput_device_config_accel_get_speed
+ * @see libinput_device_config_accel_get_default_speed
  */
 enum libinput_config_status
 libinput_device_config_accel_set_speed(struct libinput_device *device,
@@ -4283,6 +4473,10 @@ libinput_device_config_accel_set_speed(struct libinput_device *device,
  * @param device The device to configure
  *
  * @return The current speed, range -1 to 1
+ *
+ * @see libinput_device_config_accel_is_available
+ * @see libinput_device_config_accel_set_speed
+ * @see libinput_device_config_accel_get_default_speed
  */
 double
 libinput_device_config_accel_get_speed(struct libinput_device *device);
@@ -4296,6 +4490,10 @@ libinput_device_config_accel_get_speed(struct libinput_device *device);
  *
  * @param device The device to configure
  * @return The default speed setting for this device.
+ *
+ * @see libinput_device_config_accel_is_available
+ * @see libinput_device_config_accel_set_speed
+ * @see libinput_device_config_accel_get_speed
  */
 double
 libinput_device_config_accel_get_default_speed(struct libinput_device *device);
@@ -4402,9 +4600,9 @@ libinput_device_config_accel_get_default_profile(struct libinput_device *device)
  * @return Zero if natural scrolling is not supported, non-zero if natural
  * scrolling is supported by this device
  *
- * @see libinput_device_config_set_natural_scroll_enabled
- * @see libinput_device_config_get_natural_scroll_enabled
- * @see libinput_device_config_get_default_natural_scroll_enabled
+ * @see libinput_device_config_scroll_set_natural_scroll_enabled
+ * @see libinput_device_config_scroll_get_natural_scroll_enabled
+ * @see libinput_device_config_scroll_get_default_natural_scroll_enabled
  */
 int
 libinput_device_config_scroll_has_natural_scroll(struct libinput_device *device);
@@ -4419,9 +4617,9 @@ libinput_device_config_scroll_has_natural_scroll(struct libinput_device *device)
  *
  * @return A config status code
  *
- * @see libinput_device_config_has_natural_scroll
- * @see libinput_device_config_get_natural_scroll_enabled
- * @see libinput_device_config_get_default_natural_scroll_enabled
+ * @see libinput_device_config_scroll_has_natural_scroll
+ * @see libinput_device_config_scroll_get_natural_scroll_enabled
+ * @see libinput_device_config_scroll_get_default_natural_scroll_enabled
  */
 enum libinput_config_status
 libinput_device_config_scroll_set_natural_scroll_enabled(struct libinput_device *device,
@@ -4435,9 +4633,9 @@ libinput_device_config_scroll_set_natural_scroll_enabled(struct libinput_device 
  *
  * @return Zero if natural scrolling is disabled, non-zero if enabled
  *
- * @see libinput_device_config_has_natural_scroll
- * @see libinput_device_config_set_natural_scroll_enabled
- * @see libinput_device_config_get_default_natural_scroll_enabled
+ * @see libinput_device_config_scroll_has_natural_scroll
+ * @see libinput_device_config_scroll_set_natural_scroll_enabled
+ * @see libinput_device_config_scroll_get_default_natural_scroll_enabled
  */
 int
 libinput_device_config_scroll_get_natural_scroll_enabled(struct libinput_device *device);
@@ -4451,9 +4649,9 @@ libinput_device_config_scroll_get_natural_scroll_enabled(struct libinput_device 
  *
  * @return Zero if natural scrolling is disabled by default, non-zero if enabled
  *
- * @see libinput_device_config_has_natural_scroll
- * @see libinput_device_config_set_natural_scroll_enabled
- * @see libinput_device_config_get_natural_scroll_enabled
+ * @see libinput_device_config_scroll_has_natural_scroll
+ * @see libinput_device_config_scroll_set_natural_scroll_enabled
+ * @see libinput_device_config_scroll_get_natural_scroll_enabled
  */
 int
 libinput_device_config_scroll_get_default_natural_scroll_enabled(struct libinput_device *device);

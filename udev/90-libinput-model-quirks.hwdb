@@ -12,9 +12,25 @@
 #	libinput:mouse:<modalias>
 #	libinput:touchpad:<modalias>
 #	libinput:name:<name>:dmi:<dmi string>
+#	libinput:name:<name>:dt:<device-tree string>
 #	libinput:name:<name>:fwversion:<version>
 #
 # Sort by brand, model
+
+##########################################
+# Chassis types 9 (Laptop) and 10
+# (Notebook) are expected to have working
+# lid switches
+##########################################
+libinput:name:*Lid Switch*:dmi:*:ct10:*
+libinput:name:*Lid Switch*:dmi:*:ct9:*
+ LIBINPUT_ATTR_LID_SWITCH_RELIABILITY=reliable
+
+##########################################
+# Serial keyboards are internal
+##########################################
+libinput:keyboard:input:b0011v*
+ LIBINPUT_ATTR_KEYBOARD_INTEGRATION=internal
 
 ##########################################
 # ALPS
@@ -34,12 +50,33 @@ libinput:touchpad:input:b0003v05ACp*
 libinput:touchpad:input:b0005v05ACp*
  LIBINPUT_MODEL_APPLE_TOUCHPAD=1
  LIBINPUT_ATTR_SIZE_HINT=104x75
+ LIBINPUT_ATTR_TOUCH_SIZE_RANGE=150:130
+ LIBINPUT_ATTR_PALM_SIZE_THRESHOLD=800
 
 libinput:name:*Apple Inc. Apple Internal Keyboard*:dmi:*
- LIBINPUT_MODEL_APPLE_INTERNAL_KEYBOARD=1
+ LIBINPUT_ATTR_KEYBOARD_INTEGRATION=internal
 
 libinput:mouse:input:b0005v05ACp030D*
  LIBINPUT_MODEL_APPLE_MAGICMOUSE=1
+
+libinput:touchpad:input:b0005v05ACp030E*
+ LIBINPUT_ATTR_SIZE_HINT=130x110
+
+libinput:touchpad:input:b0003v05ACp021A*
+ LIBINPUT_MODEL_APPLE_TOUCHPAD_ONEBUTTON=1
+
+##########################################
+# Asus
+##########################################
+libinput:name:*ETPS/2 Elantech Touchpad*:dmi:*svnASUSTeKCOMPUTERINC.:pnX555LAB:*
+ LIBINPUT_MODEL_TOUCHPAD_VISIBLE_MARKER=1
+
+##########################################
+# Chicony
+##########################################
+# Acer Hawaii Keyboard, uses Chicony VID
+libinput:touchpad:input:b0003v04F2p1558*
+ LIBINPUT_ATTR_TPKBCOMBO_LAYOUT=below
 
 ##########################################
 # Cyborg
@@ -53,14 +90,28 @@ libinput:mouse:input:b0003v06A3p0CD5*
 ##########################################
 libinput:name:SynPS/2 Synaptics TouchPad:dmi:*svnDellInc.:*
 libinput:name:* Touchpad:dmi:*svnDellInc.:*
- LIBINPUT_MODEL_DELL_TOUCHPAD=1
+ LIBINPUT_MODEL_TOUCHPAD_VISIBLE_MARKER=1
+
+libinput:name:*AlpsPS/2 ALPS GlidePoint:dmi:*svnDellInc.:pnLatitudeE6220:*
+ LIBINPUT_ATTR_PRESSURE_RANGE=100:90
 
 ##########################################
 # Elantech
 ##########################################
 libinput:name:*ETPS/2 Elantech Touchpad*:dmi:*
  LIBINPUT_ATTR_RESOLUTION_HINT=31x31
- LIBINPUT_MODEL_ELANTECH_TOUCHPAD=1
+ LIBINPUT_ATTR_PRESSURE_RANGE=10:8
+
+libinput:name:*ETPS/2 Elantech Touchpad*:dmi:*svnASUSTeKComputerInc.:pnUX21E:*
+ LIBINPUT_ATTR_PRESSURE_RANGE=24:10
+
+libinput:name:*Elan Touchpad*:dt:*
+ LIBINPUT_ATTR_PRESSURE_RANGE=10:8
+
+libinput:name:*Elan Touchpad*:dt:*Chrombook R13*
+libinput:name:*Elan Touchpad*:dt:*CB5-312T*
+libinput:name:*Elan Touchpad*:dt:*Elm*
+ LIBINPUT_ATTR_PRESSURE_RANGE=6:4
 
 ##########################################
 # Google
@@ -85,7 +136,7 @@ libinput:name:Atmel maXTouch Touchpad:dmi:*svn*GOOGLE*:pn*Samus*
  LIBINPUT_MODEL_CHROMEBOOK=1
 
 libinput:name:Cypress APA Trackpad ?cyapa?:dmi:*
- LIBINPUT_MODEL_CYAPA=1
+ LIBINPUT_ATTR_PRESSURE_RANGE=10:8
 
 ##########################################
 # HP
@@ -137,12 +188,28 @@ libinput:name:SynPS/2 Synaptics TouchPad:dmi:*svnLENOVO:*:pvrThinkPad??50*:
 libinput:name:SynPS/2 Synaptics TouchPad:dmi:*svnLENOVO:*:pvrThinkPad??60*:
 libinput:name:SynPS/2 Synaptics TouchPad:dmi:*svnLENOVO:*:pvrThinkPadX1Carbon3rd:*
  LIBINPUT_MODEL_LENOVO_T450_TOUCHPAD=1
+ LIBINPUT_ATTR_PALM_PRESSURE_THRESHOLD=150
 
 ##########################################
 # Logitech
 ##########################################
 libinput:name:*Logitech M570*:dmi:*
  LIBINPUT_MODEL_TRACKBALL=1
+
+# Logitech Marble Mouse trackball
+libinput:mouse:input:b0003v046DpC408*
+ LIBINPUT_MODEL_LOGITECH_MARBLE_MOUSE=1
+
+##########################################
+# Microsoft
+##########################################
+# Surface3 needs us to write the open lid switch event
+libinput:name:*Lid Switch*:dmi:*svnMicrosoftCorporation:pnSurface3:*
+ LIBINPUT_ATTR_LID_SWITCH_RELIABILITY=write_open
+
+# Surface 3 Type Cover keyboard
+libinput:name:*Microsoft Surface Type Cover Keyboard*:dmi:*svnMicrosoftCorporation:pnSurface3:*
+ LIBINPUT_ATTR_KEYBOARD_INTEGRATION=internal
 
 ##########################################
 # Synaptics
@@ -181,3 +248,4 @@ libinput:touchpad:input:b0003v056Ap*
 ##########################################
 libinput:name:*Trackball*:dmi:*
  LIBINPUT_MODEL_TRACKBALL=1
+

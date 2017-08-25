@@ -147,14 +147,14 @@ static void
 tp_button_set_enter_timer(struct tp_dispatch *tp, struct tp_touch *t)
 {
 	libinput_timer_set(&t->button.timer,
-			   t->millis + DEFAULT_BUTTON_ENTER_TIMEOUT);
+			   t->time + DEFAULT_BUTTON_ENTER_TIMEOUT);
 }
 
 static void
 tp_button_set_leave_timer(struct tp_dispatch *tp, struct tp_touch *t)
 {
 	libinput_timer_set(&t->button.timer,
-			   t->millis + DEFAULT_BUTTON_LEAVE_TIMEOUT);
+			   t->time + DEFAULT_BUTTON_LEAVE_TIMEOUT);
 }
 
 /*
@@ -405,7 +405,10 @@ tp_button_ignore_handle_event(struct tp_dispatch *tp,
 		tp_button_set_state(tp, t, BUTTON_STATE_NONE, event);
 		break;
 	case BUTTON_EVENT_PRESS:
+		t->button.curr = BUTTON_EVENT_IN_AREA;
+		break;
 	case BUTTON_EVENT_RELEASE:
+		break;
 	case BUTTON_EVENT_TIMEOUT:
 		break;
 	}
@@ -417,7 +420,6 @@ tp_button_handle_event(struct tp_dispatch *tp,
 		       enum button_event event,
 		       uint64_t time)
 {
-	struct libinput *libinput = tp_libinput_context(tp);
 	enum button_state current = t->button.state;
 
 	switch(t->button.state) {
@@ -445,11 +447,11 @@ tp_button_handle_event(struct tp_dispatch *tp,
 	}
 
 	if (current != t->button.state)
-		log_debug(libinput,
-			  "button state: from %s, event %s to %s\n",
-			  button_state_to_str(current),
-			  button_event_to_str(event),
-			  button_state_to_str(t->button.state));
+		evdev_log_debug(tp->device,
+				"button state: from %s, event %s to %s\n",
+				button_state_to_str(current),
+				button_event_to_str(event),
+				button_state_to_str(t->button.state));
 }
 
 void
@@ -458,7 +460,7 @@ tp_button_handle_state(struct tp_dispatch *tp, uint64_t time)
 	struct tp_touch *t;
 
 	tp_for_each_touch(tp, t) {
-		if (t->state == TOUCH_NONE)
+		if (t->state == TOUCH_NONE || t->state == TOUCH_HOVERING)
 			continue;
 
 		if (t->state == TOUCH_END) {
@@ -503,14 +505,13 @@ tp_process_button(struct tp_dispatch *tp,
 		  const struct input_event *e,
 		  uint64_t time)
 {
-	struct libinput *libinput = tp_libinput_context(tp);
 	uint32_t mask = 1 << (e->code - BTN_LEFT);
 
 	/* Ignore other buttons on clickpads */
 	if (tp->buttons.is_clickpad && e->code != BTN_LEFT) {
-		log_bug_kernel(libinput,
-			       "received %s button event on a clickpad\n",
-			       libevdev_event_code_get_name(EV_KEY, e->code));
+		evdev_log_bug_kernel(tp->device,
+				     "received %s button event on a clickpad\n",
+				     libevdev_event_code_get_name(EV_KEY, e->code));
 		return;
 	}
 
@@ -569,10 +570,8 @@ tp_init_softbuttons(struct tp_dispatch *tp,
 	 *
 	 * On touchpads with visible markings we reduce the size of the
 	 * middle button since users have a visual guide.
-	 *
-	 * All Dell touchpads appear to have a middle marker.
 	 */
-	if (tp->device->model_flags & EVDEV_MODEL_DELL_TOUCHPAD) {
+	if (tp->device->model_flags & EVDEV_MODEL_TOUCHPAD_VISIBLE_MARKER) {
 		mm.x = width/2 - 5; /* 10mm wide */
 		edges = evdev_device_mm_to_units(device, &mm);
 		mb_le = edges.x;
@@ -612,13 +611,13 @@ tp_init_top_softbuttons(struct tp_dispatch *tp,
 
 		evdev_device_get_size(device, &width, &height);
 
-		mm.x = width * 0.58;
+		mm.x = width * 0.60;
 		mm.y = topsize_mm;
 		edges = evdev_device_mm_to_units(device, &mm);
 		tp->buttons.top_area.bottom_edge = edges.y;
 		tp->buttons.top_area.rightbutton_left_edge = edges.x;
 
-		mm.x = width * 0.42;
+		mm.x = width * 0.40;
 		edges = evdev_device_mm_to_units(device, &mm);
 		tp->buttons.top_area.leftbutton_right_edge = edges.x;
 	} else {
@@ -629,7 +628,7 @@ tp_init_top_softbuttons(struct tp_dispatch *tp,
 static inline uint32_t
 tp_button_config_click_get_methods(struct libinput_device *device)
 {
-	struct evdev_device *evdev = (struct evdev_device*)device;
+	struct evdev_device *evdev = evdev_device(device);
 	struct tp_dispatch *tp = (struct tp_dispatch*)evdev->dispatch;
 	uint32_t methods = LIBINPUT_CONFIG_CLICK_METHOD_NONE;
 
@@ -638,6 +637,9 @@ tp_button_config_click_get_methods(struct libinput_device *device)
 		if (tp->has_mt)
 			methods |= LIBINPUT_CONFIG_CLICK_METHOD_CLICKFINGER;
 	}
+
+	if (evdev->model_flags & EVDEV_MODEL_APPLE_TOUCHPAD_ONEBUTTON)
+		methods |= LIBINPUT_CONFIG_CLICK_METHOD_CLICKFINGER;
 
 	return methods;
 }
@@ -671,7 +673,7 @@ static enum libinput_config_status
 tp_button_config_click_set_method(struct libinput_device *device,
 				  enum libinput_config_click_method method)
 {
-	struct evdev_device *evdev = (struct evdev_device*)device;
+	struct evdev_device *evdev = evdev_device(device);
 	struct tp_dispatch *tp = (struct tp_dispatch*)evdev->dispatch;
 
 	tp->buttons.click_method = method;
@@ -683,7 +685,7 @@ tp_button_config_click_set_method(struct libinput_device *device,
 static enum libinput_config_click_method
 tp_button_config_click_get_method(struct libinput_device *device)
 {
-	struct evdev_device *evdev = (struct evdev_device*)device;
+	struct evdev_device *evdev = evdev_device(device);
 	struct tp_dispatch *tp = (struct tp_dispatch*)evdev->dispatch;
 
 	return tp->buttons.click_method;
@@ -697,14 +699,15 @@ tp_click_get_default_method(struct tp_dispatch *tp)
 				      EVDEV_MODEL_SYSTEM76_BONOBO |
 				      EVDEV_MODEL_SYSTEM76_GALAGO |
 				      EVDEV_MODEL_SYSTEM76_KUDU |
-				      EVDEV_MODEL_CLEVO_W740SU;
+				      EVDEV_MODEL_CLEVO_W740SU |
+				      EVDEV_MODEL_APPLE_TOUCHPAD_ONEBUTTON;
+
+	if (device->model_flags & clickfinger_models)
+		return LIBINPUT_CONFIG_CLICK_METHOD_CLICKFINGER;
 
 	if (!tp->buttons.is_clickpad)
 		return LIBINPUT_CONFIG_CLICK_METHOD_NONE;
 	else if (libevdev_get_id_vendor(tp->device->evdev) == VENDOR_ID_APPLE)
-		return LIBINPUT_CONFIG_CLICK_METHOD_CLICKFINGER;
-
-	if (device->model_flags & clickfinger_models)
 		return LIBINPUT_CONFIG_CLICK_METHOD_CLICKFINGER;
 
 	return LIBINPUT_CONFIG_CLICK_METHOD_BUTTON_AREAS;
@@ -713,7 +716,7 @@ tp_click_get_default_method(struct tp_dispatch *tp)
 static enum libinput_config_click_method
 tp_button_config_click_get_default_method(struct libinput_device *device)
 {
-	struct evdev_device *evdev = (struct evdev_device*)device;
+	struct evdev_device *evdev = evdev_device(device);
 	struct tp_dispatch *tp = (struct tp_dispatch*)evdev->dispatch;
 
 	return tp_click_get_default_method(tp);
@@ -748,7 +751,7 @@ static enum libinput_config_status
 tp_clickpad_middlebutton_set(struct libinput_device *device,
 		     enum libinput_config_middle_emulation_state enable)
 {
-	struct evdev_device *evdev = (struct evdev_device*)device;
+	struct evdev_device *evdev = evdev_device(device);
 
 	switch (enable) {
 	case LIBINPUT_CONFIG_MIDDLE_EMULATION_ENABLED:
@@ -830,9 +833,9 @@ void
 tp_init_buttons(struct tp_dispatch *tp,
 		struct evdev_device *device)
 {
-	struct libinput *libinput = tp_libinput_context(tp);
 	struct tp_touch *t;
 	const struct input_absinfo *absinfo_x, *absinfo_y;
+	int i;
 
 	tp->buttons.is_clickpad = libevdev_has_property(device->evdev,
 							INPUT_PROP_BUTTONPAD);
@@ -842,15 +845,13 @@ tp_init_buttons(struct tp_dispatch *tp,
 	if (libevdev_has_event_code(device->evdev, EV_KEY, BTN_MIDDLE) ||
 	    libevdev_has_event_code(device->evdev, EV_KEY, BTN_RIGHT)) {
 		if (tp->buttons.is_clickpad)
-			log_bug_kernel(libinput,
-				       "%s: clickpad advertising right button\n",
-				       device->devname);
+			evdev_log_bug_kernel(device,
+					     "clickpad advertising right button\n");
 	} else if (libevdev_has_event_code(device->evdev, EV_KEY, BTN_LEFT) &&
 		   !tp->buttons.is_clickpad &&
 		   libevdev_get_id_vendor(device->evdev) != VENDOR_ID_APPLE) {
-			log_bug_kernel(libinput,
-				       "%s: non clickpad without right button?\n",
-				       device->devname);
+			evdev_log_bug_kernel(device,
+					     "non clickpad without right button?\n");
 	}
 
 	absinfo_x = device->abs.absinfo_x;
@@ -873,10 +874,20 @@ tp_init_buttons(struct tp_dispatch *tp,
 
 	tp_init_middlebutton_emulation(tp, device);
 
+	i = 0;
 	tp_for_each_touch(tp, t) {
+		char timer_name[64];
+		i++;
+
+		snprintf(timer_name,
+			 sizeof(timer_name),
+			 "%s (%d) button",
+			 evdev_device_get_sysname(device),
+			 i);
 		t->button.state = BUTTON_STATE_NONE;
 		libinput_timer_init(&t->button.timer,
 				    tp_libinput_context(tp),
+				    timer_name,
 				    tp_button_handle_timeout, t);
 	}
 }
@@ -886,8 +897,10 @@ tp_remove_buttons(struct tp_dispatch *tp)
 {
 	struct tp_touch *t;
 
-	tp_for_each_touch(tp, t)
+	tp_for_each_touch(tp, t) {
 		libinput_timer_cancel(&t->button.timer);
+		libinput_timer_destroy(&t->button.timer);
+	}
 }
 
 static int
@@ -1179,7 +1192,8 @@ tp_post_clickpadbutton_buttons(struct tp_dispatch *tp, uint64_t time)
 int
 tp_post_button_events(struct tp_dispatch *tp, uint64_t time)
 {
-	if (tp->buttons.is_clickpad)
+	if (tp->buttons.is_clickpad ||
+	    tp->device->model_flags & EVDEV_MODEL_APPLE_TOUCHPAD_ONEBUTTON)
 		return tp_post_clickpadbutton_buttons(tp, time);
 	else
 		return tp_post_physical_buttons(tp, time);

@@ -70,6 +70,14 @@ struct pad_dispatch {
 	} modes;
 };
 
+static inline struct pad_dispatch*
+pad_dispatch(struct evdev_dispatch *dispatch)
+{
+	evdev_verify_dispatch_type(dispatch, DISPATCH_TABLET_PAD);
+
+	return container_of(dispatch, struct pad_dispatch, base);
+}
+
 static inline struct libinput *
 pad_libinput_context(const struct pad_dispatch *pad)
 {

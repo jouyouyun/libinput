@@ -76,6 +76,56 @@ tablet_force_button_presses(struct tablet_dispatch *tablet)
 	}
 }
 
+static inline size_t
+tablet_history_size(const struct tablet_dispatch *tablet)
+{
+	return ARRAY_LENGTH(tablet->history.samples);
+}
+
+static inline void
+tablet_history_reset(struct tablet_dispatch *tablet)
+{
+	tablet->history.count = 0;
+}
+
+static inline void
+tablet_history_push(struct tablet_dispatch *tablet,
+		    const struct tablet_axes *axes)
+{
+	unsigned int index = (tablet->history.index + 1) %
+				tablet_history_size(tablet);
+
+	tablet->history.samples[index] = *axes;
+	tablet->history.index = index;
+	tablet->history.count = min(tablet->history.count + 1,
+				    tablet_history_size(tablet));
+
+	if (tablet->history.count < tablet_history_size(tablet))
+		tablet_history_push(tablet, axes);
+}
+
+/**
+ * Return a previous axis state, where index of 0 means "most recent", 1 is
+ * "one before most recent", etc.
+ */
+static inline const struct tablet_axes*
+tablet_history_get(const struct tablet_dispatch *tablet, unsigned int index)
+{
+	size_t sz = tablet_history_size(tablet);
+
+	assert(index < sz);
+	assert(index < tablet->history.count);
+
+	index = (tablet->history.index + sz - index) % sz;
+	return &tablet->history.samples[index];
+}
+
+static inline void
+tablet_reset_changed_axes(struct tablet_dispatch *tablet)
+{
+	memset(tablet->changed_axes, 0, sizeof(tablet->changed_axes));
+}
+
 static bool
 tablet_device_has_axis(struct tablet_dispatch *tablet,
 		       enum libinput_tablet_tool_axis axis)
@@ -161,9 +211,9 @@ tablet_process_absolute(struct tablet_dispatch *tablet,
 	case ABS_WHEEL:
 		axis = evcode_to_axis(e->code);
 		if (axis == LIBINPUT_TABLET_TOOL_AXIS_NONE) {
-			log_bug_libinput(tablet_libinput_context(tablet),
-					 "Invalid ABS event code %#x\n",
-					 e->code);
+			evdev_log_bug_libinput(device,
+					       "Invalid ABS event code %#x\n",
+					       e->code);
 			break;
 		}
 
@@ -192,8 +242,9 @@ tablet_process_absolute(struct tablet_dispatch *tablet,
 	   */
 	case ABS_THROTTLE:
 	default:
-		log_info(tablet_libinput_context(tablet),
-			 "Unhandled ABS event code %#x\n", e->code);
+		evdev_log_info(device,
+			       "Unhandled ABS event code %#x\n",
+			       e->code);
 		break;
 	}
 }
@@ -201,8 +252,7 @@ tablet_process_absolute(struct tablet_dispatch *tablet,
 static void
 tablet_change_to_left_handed(struct evdev_device *device)
 {
-	struct tablet_dispatch *tablet =
-		(struct tablet_dispatch*)device->dispatch;
+	struct tablet_dispatch *tablet = tablet_dispatch(device->dispatch);
 
 	if (device->left_handed.enabled == device->left_handed.want_enabled)
 		return;
@@ -339,17 +389,14 @@ normalize_wheel(struct tablet_dispatch *tablet,
 }
 
 static inline void
-tablet_handle_xy(struct tablet_dispatch *tablet,
-		 struct evdev_device *device,
-		 struct device_coords *point_out,
-		 struct device_coords *delta_out)
+tablet_update_xy(struct tablet_dispatch *tablet,
+		 struct evdev_device *device)
 {
-	struct device_coords point;
-	struct device_coords delta = { 0, 0 };
 	const struct input_absinfo *absinfo;
 	int value;
 
-	if (bit_is_set(tablet->changed_axes, LIBINPUT_TABLET_TOOL_AXIS_X)) {
+	if (bit_is_set(tablet->changed_axes, LIBINPUT_TABLET_TOOL_AXIS_X) ||
+	    bit_is_set(tablet->changed_axes, LIBINPUT_TABLET_TOOL_AXIS_Y)) {
 		absinfo = libevdev_get_abs_info(device->evdev, ABS_X);
 
 		if (device->left_handed.enabled)
@@ -357,14 +404,8 @@ tablet_handle_xy(struct tablet_dispatch *tablet,
 		else
 			value = absinfo->value;
 
-		if (!tablet_has_status(tablet,
-				       TABLET_TOOL_ENTERING_PROXIMITY))
-			delta.x = value - tablet->axes.point.x;
 		tablet->axes.point.x = value;
-	}
-	point.x = tablet->axes.point.x;
 
-	if (bit_is_set(tablet->changed_axes, LIBINPUT_TABLET_TOOL_AXIS_Y)) {
 		absinfo = libevdev_get_abs_info(device->evdev, ABS_Y);
 
 		if (device->left_handed.enabled)
@@ -372,31 +413,35 @@ tablet_handle_xy(struct tablet_dispatch *tablet,
 		else
 			value = absinfo->value;
 
-		if (!tablet_has_status(tablet,
-				       TABLET_TOOL_ENTERING_PROXIMITY))
-			delta.y = value - tablet->axes.point.y;
 		tablet->axes.point.y = value;
+
+		evdev_transform_absolute(device, &tablet->axes.point);
 	}
-	point.y = tablet->axes.point.y;
-
-	evdev_transform_absolute(device, &point);
-	evdev_transform_relative(device, &delta);
-
-	*delta_out = delta;
-	*point_out = point;
 }
 
 static inline struct normalized_coords
-tool_process_delta(struct libinput_tablet_tool *tool,
-		   const struct evdev_device *device,
-		   const struct device_coords *delta,
-		   uint64_t time)
+tablet_tool_process_delta(struct tablet_dispatch *tablet,
+			  struct libinput_tablet_tool *tool,
+			  const struct evdev_device *device,
+			  struct tablet_axes *axes,
+			  uint64_t time)
 {
 	const struct normalized_coords zero = { 0.0, 0.0 };
+	struct device_coords delta = { 0, 0 };
 	struct device_float_coords accel;
 
-	accel.x = 1.0 * delta->x;
-	accel.y = 1.0 * delta->y;
+	if (!tablet_has_status(tablet,
+			       TABLET_TOOL_ENTERING_PROXIMITY) &&
+	    (bit_is_set(tablet->changed_axes, LIBINPUT_TABLET_TOOL_AXIS_X) ||
+	     bit_is_set(tablet->changed_axes, LIBINPUT_TABLET_TOOL_AXIS_Y))) {
+		delta.x = axes->point.x - tablet->last_smooth_point.x;
+		delta.y = axes->point.y - tablet->last_smooth_point.y;
+	}
+
+	tablet->last_smooth_point = axes->point;
+
+	accel.x = 1.0 * delta.x;
+	accel.y = 1.0 * delta.y;
 
 	if (device_float_is_zero(accel))
 		return zero;
@@ -407,8 +452,8 @@ tool_process_delta(struct libinput_tablet_tool *tool,
 			       time);
 }
 
-static inline double
-tablet_handle_pressure(struct tablet_dispatch *tablet,
+static inline void
+tablet_update_pressure(struct tablet_dispatch *tablet,
 		       struct evdev_device *device,
 		       struct libinput_tablet_tool *tool)
 {
@@ -419,12 +464,10 @@ tablet_handle_pressure(struct tablet_dispatch *tablet,
 		absinfo = libevdev_get_abs_info(device->evdev, ABS_PRESSURE);
 		tablet->axes.pressure = normalize_pressure(absinfo, tool);
 	}
-
-	return tablet->axes.pressure;
 }
 
-static inline double
-tablet_handle_distance(struct tablet_dispatch *tablet,
+static inline void
+tablet_update_distance(struct tablet_dispatch *tablet,
 		       struct evdev_device *device)
 {
 	const struct input_absinfo *absinfo;
@@ -434,12 +477,10 @@ tablet_handle_distance(struct tablet_dispatch *tablet,
 		absinfo = libevdev_get_abs_info(device->evdev, ABS_DISTANCE);
 		tablet->axes.distance = normalize_distance(absinfo);
 	}
-
-	return tablet->axes.distance;
 }
 
-static inline double
-tablet_handle_slider(struct tablet_dispatch *tablet,
+static inline void
+tablet_update_slider(struct tablet_dispatch *tablet,
 		     struct evdev_device *device)
 {
 	const struct input_absinfo *absinfo;
@@ -449,40 +490,36 @@ tablet_handle_slider(struct tablet_dispatch *tablet,
 		absinfo = libevdev_get_abs_info(device->evdev, ABS_WHEEL);
 		tablet->axes.slider = normalize_slider(absinfo);
 	}
-
-	return tablet->axes.slider;
 }
 
-static inline struct tilt_degrees
-tablet_handle_tilt(struct tablet_dispatch *tablet,
+static inline void
+tablet_update_tilt(struct tablet_dispatch *tablet,
 		   struct evdev_device *device)
 {
-	struct tilt_degrees tilt;
 	const struct input_absinfo *absinfo;
 
+	/* mouse rotation resets tilt to 0 so always fetch both axes if
+	 * either has changed */
 	if (bit_is_set(tablet->changed_axes,
-		       LIBINPUT_TABLET_TOOL_AXIS_TILT_X)) {
+		       LIBINPUT_TABLET_TOOL_AXIS_TILT_X) ||
+	    bit_is_set(tablet->changed_axes,
+		       LIBINPUT_TABLET_TOOL_AXIS_TILT_Y)) {
+
 		absinfo = libevdev_get_abs_info(device->evdev, ABS_TILT_X);
 		tablet->axes.tilt.x = adjust_tilt(absinfo);
-		if (device->left_handed.enabled)
-			tablet->axes.tilt.x *= -1;
-	}
-	tilt.x = tablet->axes.tilt.x;
 
-	if (bit_is_set(tablet->changed_axes,
-		       LIBINPUT_TABLET_TOOL_AXIS_TILT_Y)) {
 		absinfo = libevdev_get_abs_info(device->evdev, ABS_TILT_Y);
 		tablet->axes.tilt.y = adjust_tilt(absinfo);
-		if (device->left_handed.enabled)
-			tablet->axes.tilt.y *= -1;
-	}
-	tilt.y = tablet->axes.tilt.y;
 
-	return tilt;
+		if (device->left_handed.enabled) {
+			tablet->axes.tilt.x *= -1;
+			tablet->axes.tilt.y *= -1;
+		}
+	}
 }
 
-static inline double
-tablet_handle_artpen_rotation(struct tablet_dispatch *tablet,
+static inline void
+tablet_update_artpen_rotation(struct tablet_dispatch *tablet,
 			      struct evdev_device *device)
 {
 	const struct input_absinfo *absinfo;
@@ -494,12 +531,10 @@ tablet_handle_artpen_rotation(struct tablet_dispatch *tablet,
 		/* artpen has 0 with buttons pointing east */
 		tablet->axes.rotation = convert_to_degrees(absinfo, 90);
 	}
-
-	return tablet->axes.rotation;
 }
 
-static inline double
-tablet_handle_mouse_rotation(struct tablet_dispatch *tablet,
+static inline void
+tablet_update_mouse_rotation(struct tablet_dispatch *tablet,
 			     struct evdev_device *device)
 {
 	if (bit_is_set(tablet->changed_axes,
@@ -508,28 +543,75 @@ tablet_handle_mouse_rotation(struct tablet_dispatch *tablet,
 		       LIBINPUT_TABLET_TOOL_AXIS_TILT_Y)) {
 		convert_tilt_to_rotation(tablet);
 	}
-
-	return tablet->axes.rotation;
 }
 
-static inline double
-tablet_handle_wheel(struct tablet_dispatch *tablet,
-		    struct evdev_device *device,
-		    int *wheel_discrete)
+static inline void
+tablet_update_rotation(struct tablet_dispatch *tablet,
+		       struct evdev_device *device)
+{
+	/* We must check ROTATION_Z after TILT_X/Y so that the tilt axes are
+	 * already normalized and set if we have the mouse/lens tool */
+	if (tablet->current_tool_type == LIBINPUT_TABLET_TOOL_TYPE_MOUSE ||
+	    tablet->current_tool_type == LIBINPUT_TABLET_TOOL_TYPE_LENS) {
+		tablet_update_mouse_rotation(tablet, device);
+		clear_bit(tablet->changed_axes, LIBINPUT_TABLET_TOOL_AXIS_TILT_X);
+		clear_bit(tablet->changed_axes, LIBINPUT_TABLET_TOOL_AXIS_TILT_Y);
+		tablet->axes.tilt.x = 0;
+		tablet->axes.tilt.y = 0;
+
+		/* tilt is already converted to left-handed, so mouse
+		 * rotation is converted to left-handed automatically */
+	} else {
+
+		tablet_update_artpen_rotation(tablet, device);
+
+		if (device->left_handed.enabled) {
+			double r = tablet->axes.rotation;
+			tablet->axes.rotation = fmod(180 + r, 360);
+		}
+	}
+}
+
+static inline void
+tablet_update_wheel(struct tablet_dispatch *tablet,
+		    struct evdev_device *device)
 {
 	int a;
 
 	a = LIBINPUT_TABLET_TOOL_AXIS_REL_WHEEL;
 	if (bit_is_set(tablet->changed_axes, a)) {
-		*wheel_discrete = tablet->axes.wheel_discrete;
+		/* tablet->axes.wheel_discrete is already set */
 		tablet->axes.wheel = normalize_wheel(tablet,
 						     tablet->axes.wheel_discrete);
 	} else {
 		tablet->axes.wheel = 0;
-		*wheel_discrete = 0;
+		tablet->axes.wheel_discrete = 0;
+	}
+}
+
+static void
+tablet_smoothen_axes(const struct tablet_dispatch *tablet,
+		     struct tablet_axes *axes)
+{
+	size_t i;
+	size_t count = tablet_history_size(tablet);
+	struct tablet_axes smooth = { 0 };
+
+	for (i = 0; i < count; i++) {
+		const struct tablet_axes *a = tablet_history_get(tablet, i);
+
+		smooth.point.x += a->point.x;
+		smooth.point.y += a->point.y;
+
+		smooth.tilt.x += a->tilt.x;
+		smooth.tilt.y += a->tilt.y;
 	}
 
-	return tablet->axes.wheel;
+	axes->point.x = smooth.point.x/count;
+	axes->point.y = smooth.point.y/count;
+
+	axes->tilt.x = smooth.tilt.x/count;
+	axes->tilt.y = smooth.tilt.y/count;
 }
 
 static bool
@@ -541,41 +623,44 @@ tablet_check_notify_axes(struct tablet_dispatch *tablet,
 {
 	struct tablet_axes axes = {0};
 	const char tmp[sizeof(tablet->changed_axes)] = {0};
-	struct device_coords delta;
+	bool rc = false;
 
-	if (memcmp(tmp, tablet->changed_axes, sizeof(tmp)) == 0)
-		return false;
-
-	tablet_handle_xy(tablet, device, &axes.point, &delta);
-	axes.pressure = tablet_handle_pressure(tablet, device, tool);
-	axes.distance = tablet_handle_distance(tablet, device);
-	axes.slider = tablet_handle_slider(tablet, device);
-	axes.tilt = tablet_handle_tilt(tablet, device);
-	axes.delta = tool_process_delta(tool, device, &delta, time);
-
-	/* We must check ROTATION_Z after TILT_X/Y so that the tilt axes are
-	 * already normalized and set if we have the mouse/lens tool */
-	if (tablet->current_tool_type == LIBINPUT_TABLET_TOOL_TYPE_MOUSE ||
-	    tablet->current_tool_type == LIBINPUT_TABLET_TOOL_TYPE_LENS) {
-		axes.rotation = tablet_handle_mouse_rotation(tablet, device);
-		clear_bit(tablet->changed_axes, LIBINPUT_TABLET_TOOL_AXIS_TILT_X);
-		clear_bit(tablet->changed_axes, LIBINPUT_TABLET_TOOL_AXIS_TILT_Y);
-		axes.tilt.x = 0;
-		axes.tilt.y = 0;
-
-		/* tilt is already converted to left-handed, so mouse
-		 * rotation is converted to left-handed automatically */
-	} else {
-		axes.rotation = tablet_handle_artpen_rotation(tablet, device);
-		if (device->left_handed.enabled)
-			axes.rotation = fmod(180 + axes.rotation, 360);
+	if (memcmp(tmp, tablet->changed_axes, sizeof(tmp)) == 0) {
+		axes = tablet->axes;
+		goto out;
 	}
 
-	axes.wheel = tablet_handle_wheel(tablet, device, &axes.wheel_discrete);
+	tablet_update_xy(tablet, device);
+	tablet_update_pressure(tablet, device, tool);
+	tablet_update_distance(tablet, device);
+	tablet_update_slider(tablet, device);
+	tablet_update_tilt(tablet, device);
+	tablet_update_wheel(tablet, device);
+	/* We must check ROTATION_Z after TILT_X/Y so that the tilt axes are
+	 * already normalized and set if we have the mouse/lens tool */
+	tablet_update_rotation(tablet, device);
+
+	axes.point = tablet->axes.point;
+	axes.pressure = tablet->axes.pressure;
+	axes.distance = tablet->axes.distance;
+	axes.slider = tablet->axes.slider;
+	axes.tilt = tablet->axes.tilt;
+	axes.wheel = tablet->axes.wheel;
+	axes.wheel_discrete = tablet->axes.wheel_discrete;
+	axes.rotation = tablet->axes.rotation;
+
+	rc = true;
+
+out:
+	tablet_history_push(tablet, &tablet->axes);
+	tablet_smoothen_axes(tablet, &axes);
+
+	/* The delta relies on the last *smooth* point, so we do it last */
+	axes.delta = tablet_tool_process_delta(tablet, tool, device, &axes, time);
 
 	*axes_out = axes;
 
-	return true;
+	return rc;
 }
 
 static void
@@ -598,9 +683,10 @@ tablet_update_button(struct tablet_dispatch *tablet,
 	case BTN_STYLUS2:
 		break;
 	default:
-		log_info(tablet_libinput_context(tablet),
-			 "Unhandled button %s (%#x)\n",
-			 libevdev_event_code_get_name(EV_KEY, evcode), evcode);
+		evdev_log_info(tablet->device,
+			       "Unhandled button %s (%#x)\n",
+			       libevdev_event_code_get_name(EV_KEY, evcode),
+			       evcode);
 		return;
 	}
 
@@ -641,8 +727,8 @@ tablet_process_key(struct tablet_dispatch *tablet,
 {
 	switch (e->code) {
 	case BTN_TOOL_FINGER:
-		log_bug_libinput(tablet_libinput_context(tablet),
-				 "Invalid tool 'finger' on tablet interface\n");
+		evdev_log_bug_libinput(device,
+			       "Invalid tool 'finger' on tablet interface\n");
 		break;
 	case BTN_TOOL_PEN:
 	case BTN_TOOL_RUBBER:
@@ -695,9 +781,9 @@ tablet_process_relative(struct tablet_dispatch *tablet,
 	case REL_WHEEL:
 		axis = rel_evcode_to_axis(e->code);
 		if (axis == LIBINPUT_TABLET_TOOL_AXIS_NONE) {
-			log_bug_libinput(tablet_libinput_context(tablet),
-					 "Invalid ABS event code %#x\n",
-					 e->code);
+			evdev_log_bug_libinput(device,
+					       "Invalid ABS event code %#x\n",
+					       e->code);
 			break;
 		}
 		set_bit(tablet->changed_axes, axis);
@@ -705,10 +791,10 @@ tablet_process_relative(struct tablet_dispatch *tablet,
 		tablet_set_status(tablet, TABLET_AXES_UPDATED);
 		break;
 	default:
-		log_info(tablet_libinput_context(tablet),
-			 "Unhandled relative axis %s (%#x)\n",
-			 libevdev_event_code_get_name(EV_REL, e->code),
-			 e->code);
+		evdev_log_info(device,
+			       "Unhandled relative axis %s (%#x)\n",
+			       libevdev_event_code_get_name(EV_REL, e->code),
+			       e->code);
 		return;
 	}
 }
@@ -728,10 +814,10 @@ tablet_process_misc(struct tablet_dispatch *tablet,
 	case MSC_SCAN:
 		break;
 	default:
-		log_info(tablet_libinput_context(tablet),
-			 "Unhandled MSC event code %s (%#x)\n",
-			 libevdev_event_code_get_name(EV_MSC, e->code),
-			 e->code);
+		evdev_log_info(device,
+			       "Unhandled MSC event code %s (%#x)\n",
+			       libevdev_event_code_get_name(EV_MSC, e->code),
+			       e->code);
 		break;
 	}
 }
@@ -762,7 +848,6 @@ tool_set_bits_from_libwacom(const struct tablet_dispatch *tablet,
 	int rc = 1;
 
 #if HAVE_LIBWACOM
-	struct libinput *libinput = tablet_libinput_context(tablet);
 	WacomDeviceDatabase *db;
 	const WacomStylus *s = NULL;
 	int code;
@@ -771,8 +856,8 @@ tool_set_bits_from_libwacom(const struct tablet_dispatch *tablet,
 
 	db = libwacom_database_new();
 	if (!db) {
-		log_info(libinput,
-			 "Failed to initialize libwacom context.\n");
+		evdev_log_info(tablet->device,
+			       "Failed to initialize libwacom context.\n");
 		goto out;
 	}
 	s = libwacom_stylus_get_for_id(db, tool->tool_id);
@@ -950,8 +1035,7 @@ tablet_get_tool(struct tablet_dispatch *tablet,
 		const struct input_absinfo *pressure;
 
 		tool = zalloc(sizeof *tool);
-		if (!tool)
-			return NULL;
+
 		*tool = (struct libinput_tablet_tool) {
 			.type = type,
 			.serial = serial,
@@ -1141,7 +1225,7 @@ detect_pressure_offset(struct tablet_dispatch *tablet,
 		return;
 
 	if (offset > axis_range_percentage(pressure, 20)) {
-		log_error(tablet_libinput_context(tablet),
+		evdev_log_error(device,
 			 "Ignoring pressure offset greater than 20%% detected on tool %s (serial %#x). "
 			 "See http://wayland.freedesktop.org/libinput/doc/%s/tablet-support.html\n",
 			 tablet_tool_type_to_string(tool->type),
@@ -1150,7 +1234,7 @@ detect_pressure_offset(struct tablet_dispatch *tablet,
 		return;
 	}
 
-	log_info(tablet_libinput_context(tablet),
+	evdev_log_info(device,
 		 "Pressure offset detected on tool %s (serial %#x).  "
 		 "See http://wayland.freedesktop.org/libinput/doc/%s/tablet-support.html\n",
 		 tablet_tool_type_to_string(tool->type),
@@ -1173,17 +1257,17 @@ detect_tool_contact(struct tablet_dispatch *tablet,
 
 	/* if we have pressure, always use that for contact, not BTN_TOUCH */
 	if (tablet_has_status(tablet, TABLET_TOOL_ENTERING_CONTACT))
-		log_bug_libinput(tablet_libinput_context(tablet),
-				 "Invalid status: entering contact\n");
+		evdev_log_bug_libinput(device,
+				       "Invalid status: entering contact\n");
 	if (tablet_has_status(tablet, TABLET_TOOL_LEAVING_CONTACT) &&
 	    !tablet_has_status(tablet, TABLET_TOOL_LEAVING_PROXIMITY))
-		log_bug_libinput(tablet_libinput_context(tablet),
-				 "Invalid status: leaving contact\n");
+		evdev_log_bug_libinput(device,
+				       "Invalid status: leaving contact\n");
 
 	p = libevdev_get_abs_info(tablet->device->evdev, ABS_PRESSURE);
 	if (!p) {
-		log_bug_libinput(tablet_libinput_context(tablet),
-				 "Missing pressure axis\n");
+		evdev_log_bug_libinput(device,
+				       "Missing pressure axis\n");
 		return;
 	}
 	pressure = p->value;
@@ -1270,22 +1354,169 @@ tablet_update_proximity_state(struct tablet_dispatch *tablet,
 	tablet_set_status(tablet, TABLET_TOOL_LEAVING_PROXIMITY);
 }
 
+static inline bool
+tablet_send_proximity_in(struct tablet_dispatch *tablet,
+			 struct libinput_tablet_tool *tool,
+			 struct evdev_device *device,
+			 struct tablet_axes *axes,
+			 uint64_t time)
+{
+	if (!tablet_has_status(tablet, TABLET_TOOL_ENTERING_PROXIMITY))
+		return false;
+
+	tablet_notify_proximity(&device->base,
+				time,
+				tool,
+				LIBINPUT_TABLET_TOOL_PROXIMITY_STATE_IN,
+				tablet->changed_axes,
+				axes);
+	tablet_unset_status(tablet, TABLET_TOOL_ENTERING_PROXIMITY);
+	tablet_unset_status(tablet, TABLET_AXES_UPDATED);
+
+	tablet_reset_changed_axes(tablet);
+	axes->delta.x = 0;
+	axes->delta.y = 0;
+
+	return true;
+}
+
+static inline bool
+tablet_send_proximity_out(struct tablet_dispatch *tablet,
+			 struct libinput_tablet_tool *tool,
+			 struct evdev_device *device,
+			 struct tablet_axes *axes,
+			 uint64_t time)
+{
+	if (!tablet_has_status(tablet, TABLET_TOOL_LEAVING_PROXIMITY))
+		return false;
+
+	tablet_notify_proximity(&device->base,
+				time,
+				tool,
+				LIBINPUT_TABLET_TOOL_PROXIMITY_STATE_OUT,
+				tablet->changed_axes,
+				axes);
+
+	tablet_set_status(tablet, TABLET_TOOL_OUT_OF_PROXIMITY);
+	tablet_unset_status(tablet, TABLET_TOOL_LEAVING_PROXIMITY);
+
+	tablet_reset_changed_axes(tablet);
+	axes->delta.x = 0;
+	axes->delta.y = 0;
+
+	return true;
+}
+
+static inline bool
+tablet_send_tip(struct tablet_dispatch *tablet,
+		struct libinput_tablet_tool *tool,
+		struct evdev_device *device,
+		struct tablet_axes *axes,
+		uint64_t time)
+{
+	if (tablet_has_status(tablet, TABLET_TOOL_ENTERING_CONTACT)) {
+		tablet_notify_tip(&device->base,
+				  time,
+				  tool,
+				  LIBINPUT_TABLET_TOOL_TIP_DOWN,
+				  tablet->changed_axes,
+				  axes);
+		tablet_unset_status(tablet, TABLET_AXES_UPDATED);
+		tablet_unset_status(tablet, TABLET_TOOL_ENTERING_CONTACT);
+		tablet_set_status(tablet, TABLET_TOOL_IN_CONTACT);
+
+		tablet_reset_changed_axes(tablet);
+		axes->delta.x = 0;
+		axes->delta.y = 0;
+
+		return true;
+	}
+
+	if (tablet_has_status(tablet, TABLET_TOOL_LEAVING_CONTACT)) {
+		tablet_notify_tip(&device->base,
+				  time,
+				  tool,
+				  LIBINPUT_TABLET_TOOL_TIP_UP,
+				  tablet->changed_axes,
+				  axes);
+		tablet_unset_status(tablet, TABLET_AXES_UPDATED);
+		tablet_unset_status(tablet, TABLET_TOOL_LEAVING_CONTACT);
+		tablet_unset_status(tablet, TABLET_TOOL_IN_CONTACT);
+
+		tablet_reset_changed_axes(tablet);
+		axes->delta.x = 0;
+		axes->delta.y = 0;
+
+		return true;
+	}
+
+	return false;
+}
+
+static inline void
+tablet_send_axes(struct tablet_dispatch *tablet,
+		 struct libinput_tablet_tool *tool,
+		 struct evdev_device *device,
+		 struct tablet_axes *axes,
+		 uint64_t time)
+{
+	enum libinput_tablet_tool_tip_state tip_state;
+
+	if (!tablet_has_status(tablet, TABLET_AXES_UPDATED))
+		return;
+
+	if (tablet_has_status(tablet,
+			      TABLET_TOOL_IN_CONTACT))
+		tip_state = LIBINPUT_TABLET_TOOL_TIP_DOWN;
+	else
+		tip_state = LIBINPUT_TABLET_TOOL_TIP_UP;
+
+	tablet_notify_axis(&device->base,
+			   time,
+			   tool,
+			   tip_state,
+			   tablet->changed_axes,
+			   axes);
+	tablet_unset_status(tablet, TABLET_AXES_UPDATED);
+	tablet_reset_changed_axes(tablet);
+	axes->delta.x = 0;
+	axes->delta.y = 0;
+}
+
+static inline void
+tablet_send_buttons(struct tablet_dispatch *tablet,
+		    struct libinput_tablet_tool *tool,
+		    struct evdev_device *device,
+		    uint64_t time)
+{
+	if (tablet_has_status(tablet, TABLET_BUTTONS_RELEASED)) {
+		tablet_notify_buttons(tablet,
+				      device,
+				      time,
+				      tool,
+				      LIBINPUT_BUTTON_STATE_RELEASED);
+		tablet_unset_status(tablet, TABLET_BUTTONS_RELEASED);
+	}
+
+	if (tablet_has_status(tablet, TABLET_BUTTONS_PRESSED)) {
+		tablet_notify_buttons(tablet,
+				      device,
+				      time,
+				      tool,
+				      LIBINPUT_BUTTON_STATE_PRESSED);
+		tablet_unset_status(tablet, TABLET_BUTTONS_PRESSED);
+	}
+}
+
 static void
-tablet_send_axis_proximity_tip_down_events(struct tablet_dispatch *tablet,
-					   struct evdev_device *device,
-					   struct libinput_tablet_tool *tool,
-					   uint64_t time)
+tablet_send_events(struct tablet_dispatch *tablet,
+		   struct libinput_tablet_tool *tool,
+		   struct evdev_device *device,
+		   uint64_t time)
 {
 	struct tablet_axes axes = {0};
 
-	/* We need to make sure that we check that the tool is not out of
-	 * proximity before we send any axis updates. This is because many
-	 * tablets will send axis events with incorrect values if the tablet
-	 * tool is close enough so that the tablet can partially detect that
-	 * it's there, but can't properly receive any data from the tool. */
-	if (tablet_has_status(tablet, TABLET_TOOL_OUT_OF_PROXIMITY))
-		goto out;
-	else if (tablet_has_status(tablet, TABLET_TOOL_LEAVING_PROXIMITY)) {
+	if (tablet_has_status(tablet, TABLET_TOOL_LEAVING_PROXIMITY)) {
 		/* Tool is leaving proximity, we can't rely on the last axis
 		 * information (it'll be mostly 0), so we just get the
 		 * current state and skip over updating the axes.
@@ -1295,66 +1526,26 @@ tablet_send_axis_proximity_tip_down_events(struct tablet_dispatch *tablet,
 		/* Dont' send an axis event, but we may have a tip event
 		 * update */
 		tablet_unset_status(tablet, TABLET_AXES_UPDATED);
-	} else if (!tablet_check_notify_axes(tablet,
-					     device,
-					     tool,
-					     &axes,
-					     time)) {
-		goto out;
+	} else {
+		tablet_check_notify_axes(tablet, device, tool, &axes, time);
 	}
 
-	if (tablet_has_status(tablet, TABLET_TOOL_ENTERING_PROXIMITY)) {
-		tablet_notify_proximity(&device->base,
-					time,
-					tool,
-					LIBINPUT_TABLET_TOOL_PROXIMITY_STATE_IN,
-					tablet->changed_axes,
-					&axes);
-		tablet_unset_status(tablet, TABLET_TOOL_ENTERING_PROXIMITY);
-		tablet_unset_status(tablet, TABLET_AXES_UPDATED);
-	}
+	assert(tablet->axes.delta.x == 0);
+	assert(tablet->axes.delta.y == 0);
 
-	if (tablet_has_status(tablet, TABLET_TOOL_ENTERING_CONTACT)) {
-		tablet_notify_tip(&device->base,
-				  time,
-				  tool,
-				  LIBINPUT_TABLET_TOOL_TIP_DOWN,
-				  tablet->changed_axes,
-				  &tablet->axes);
-		tablet_unset_status(tablet, TABLET_AXES_UPDATED);
-		tablet_unset_status(tablet, TABLET_TOOL_ENTERING_CONTACT);
-		tablet_set_status(tablet, TABLET_TOOL_IN_CONTACT);
-	} else if (tablet_has_status(tablet, TABLET_TOOL_LEAVING_CONTACT)) {
-		tablet_notify_tip(&device->base,
-				  time,
-				  tool,
-				  LIBINPUT_TABLET_TOOL_TIP_UP,
-				  tablet->changed_axes,
-				  &tablet->axes);
-		tablet_unset_status(tablet, TABLET_AXES_UPDATED);
-		tablet_unset_status(tablet, TABLET_TOOL_LEAVING_CONTACT);
-		tablet_unset_status(tablet, TABLET_TOOL_IN_CONTACT);
-	} else if (tablet_has_status(tablet, TABLET_AXES_UPDATED)) {
-		enum libinput_tablet_tool_tip_state tip_state;
+	tablet_send_proximity_in(tablet, tool, device, &axes, time);
+	if (!tablet_send_tip(tablet, tool, device, &axes, time))
+		tablet_send_axes(tablet, tool, device, &axes, time);
 
-		if (tablet_has_status(tablet,
-				      TABLET_TOOL_IN_CONTACT))
-			tip_state = LIBINPUT_TABLET_TOOL_TIP_DOWN;
-		else
-			tip_state = LIBINPUT_TABLET_TOOL_TIP_UP;
-
-		tablet_notify_axis(&device->base,
-				   time,
-				   tool,
-				   tip_state,
-				   tablet->changed_axes,
-				   &axes);
-		tablet_unset_status(tablet, TABLET_AXES_UPDATED);
-	}
-
-out:
-	memset(tablet->changed_axes, 0, sizeof(tablet->changed_axes));
 	tablet_unset_status(tablet, TABLET_TOOL_ENTERING_CONTACT);
+	tablet_reset_changed_axes(tablet);
+
+	tablet_send_buttons(tablet, tool, device, time);
+
+	if (tablet_send_proximity_out(tablet, tool, device, &axes, time)) {
+		tablet_change_to_left_handed(device);
+		tablet_history_reset(tablet);
+	}
 }
 
 static void
@@ -1397,43 +1588,7 @@ tablet_flush(struct tablet_dispatch *tablet,
 		sanitize_tablet_axes(tablet, tool);
 	}
 
-	tablet_send_axis_proximity_tip_down_events(tablet,
-						   device,
-						   tool,
-						   time);
-
-	if (tablet_has_status(tablet, TABLET_BUTTONS_RELEASED)) {
-		tablet_notify_buttons(tablet,
-				      device,
-				      time,
-				      tool,
-				      LIBINPUT_BUTTON_STATE_RELEASED);
-		tablet_unset_status(tablet, TABLET_BUTTONS_RELEASED);
-	}
-
-	if (tablet_has_status(tablet, TABLET_BUTTONS_PRESSED)) {
-		tablet_notify_buttons(tablet,
-				      device,
-				      time,
-				      tool,
-				      LIBINPUT_BUTTON_STATE_PRESSED);
-		tablet_unset_status(tablet, TABLET_BUTTONS_PRESSED);
-	}
-
-	if (tablet_has_status(tablet, TABLET_TOOL_LEAVING_PROXIMITY)) {
-		memset(tablet->changed_axes, 0, sizeof(tablet->changed_axes));
-		tablet_notify_proximity(&device->base,
-					time,
-					tool,
-					LIBINPUT_TABLET_TOOL_PROXIMITY_STATE_OUT,
-					tablet->changed_axes,
-					&tablet->axes);
-
-		tablet_set_status(tablet, TABLET_TOOL_OUT_OF_PROXIMITY);
-		tablet_unset_status(tablet, TABLET_TOOL_LEAVING_PROXIMITY);
-
-		tablet_change_to_left_handed(device);
-	}
+	tablet_send_events(tablet, tool, device, time);
 }
 
 static inline void
@@ -1484,8 +1639,7 @@ tablet_process(struct evdev_dispatch *dispatch,
 	       struct input_event *e,
 	       uint64_t time)
 {
-	struct tablet_dispatch *tablet =
-		(struct tablet_dispatch *)dispatch;
+	struct tablet_dispatch *tablet = tablet_dispatch(dispatch);
 
 	switch (e->type) {
 	case EV_ABS:
@@ -1506,10 +1660,10 @@ tablet_process(struct evdev_dispatch *dispatch,
 		tablet_reset_state(tablet);
 		break;
 	default:
-		log_error(tablet_libinput_context(tablet),
-			  "Unexpected event type %s (%#x)\n",
-			  libevdev_event_type_get_name(e->type),
-			  e->type);
+		evdev_log_error(device,
+				"Unexpected event type %s (%#x)\n",
+				libevdev_event_type_get_name(e->type),
+				e->type);
 		break;
 	}
 }
@@ -1518,8 +1672,7 @@ static void
 tablet_suspend(struct evdev_dispatch *dispatch,
 	       struct evdev_device *device)
 {
-	struct tablet_dispatch *tablet =
-		(struct tablet_dispatch *)dispatch;
+	struct tablet_dispatch *tablet = tablet_dispatch(dispatch);
 
 	tablet_set_touch_device_enabled(tablet->touch_device, true);
 }
@@ -1527,8 +1680,7 @@ tablet_suspend(struct evdev_dispatch *dispatch,
 static void
 tablet_destroy(struct evdev_dispatch *dispatch)
 {
-	struct tablet_dispatch *tablet =
-		(struct tablet_dispatch*)dispatch;
+	struct tablet_dispatch *tablet = tablet_dispatch(dispatch);
 	struct libinput_tablet_tool *tool, *tmp;
 
 	list_for_each_safe(tool, tmp, &tablet->tool_list, link) {
@@ -1542,8 +1694,7 @@ static void
 tablet_device_added(struct evdev_device *device,
 		    struct evdev_device *added_device)
 {
-	struct tablet_dispatch *tablet =
-		(struct tablet_dispatch*)device->dispatch;
+	struct tablet_dispatch *tablet = tablet_dispatch(device->dispatch);
 
 	if (libinput_device_get_device_group(&device->base) !=
 	    libinput_device_get_device_group(&added_device->base))
@@ -1560,8 +1711,7 @@ static void
 tablet_device_removed(struct evdev_device *device,
 		      struct evdev_device *removed_device)
 {
-	struct tablet_dispatch *tablet =
-		(struct tablet_dispatch*)device->dispatch;
+	struct tablet_dispatch *tablet = tablet_dispatch(device->dispatch);
 
 	if (tablet->touch_device == removed_device)
 		tablet->touch_device = NULL;
@@ -1571,10 +1721,10 @@ static void
 tablet_check_initial_proximity(struct evdev_device *device,
 			       struct evdev_dispatch *dispatch)
 {
+	struct tablet_dispatch *tablet = tablet_dispatch(dispatch);
 	bool tool_in_prox = false;
 	int code, state;
 	enum libinput_tablet_tool_type tool;
-	struct tablet_dispatch *tablet = (struct tablet_dispatch*)dispatch;
 
 	for (tool = LIBINPUT_TABLET_TOOL_TYPE_PEN; tool <= LIBINPUT_TABLET_TOOL_TYPE_MAX; tool++) {
 		code = tablet_tool_to_evcode(tool);
@@ -1731,10 +1881,9 @@ tablet_reject_device(struct evdev_device *device)
 
 out:
 	if (rc) {
-		log_bug_libinput(evdev_libinput_context(device),
-				 "Device '%s' does not meet tablet criteria. "
-				 "Ignoring this device.\n",
-				 device->devname);
+		evdev_log_bug_libinput(device,
+				       "device does not meet tablet criteria. "
+				       "Ignoring this device.\n");
 	}
 	return rc;
 }
@@ -1746,6 +1895,7 @@ tablet_init(struct tablet_dispatch *tablet,
 	enum libinput_tablet_tool_axis axis;
 	int rc;
 
+	tablet->base.dispatch_type = DISPATCH_TABLET;
 	tablet->base.interface = &tablet_interface;
 	tablet->device = device;
 	tablet->status = TABLET_NONE;
@@ -1781,8 +1931,6 @@ evdev_tablet_create(struct evdev_device *device)
 	struct tablet_dispatch *tablet;
 
 	tablet = zalloc(sizeof *tablet);
-	if (!tablet)
-		return NULL;
 
 	if (tablet_init(tablet, device) != 0) {
 		tablet_destroy(&tablet->base);

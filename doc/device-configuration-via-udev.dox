@@ -24,7 +24,7 @@ Example values are:
  ENV{LIBINPUT_CALIBRATION_MATRIX}="0 -1 1 1 0 0" # 90 degree clockwise
  ENV{LIBINPUT_CALIBRATION_MATRIX}="-1 0 1 0 -1 1" # 180 degree clockwise
  ENV{LIBINPUT_CALIBRATION_MATRIX}="0 1 0 -1 0 1" # 270 degree clockwise
- ENV{LIBINPUT_CALIBRATION_MATRIX}="-1 0 1 1 0 0" # reflect along y axis
+ ENV{LIBINPUT_CALIBRATION_MATRIX}="-1 0 1 0 1 0" # reflect along y axis
 @endcode
 </dd>
 <dt>LIBINPUT_DEVICE_GROUP</dt>
@@ -32,8 +32,12 @@ Example values are:
 devices with the same property value are grouped into the same device group,
 the value itself is irrelevant otherwise.
 </dd>
+<dt>LIBINPUT_IGNORE_DEVICE</dt>
+<dd>If set to anything other than "0", the device is ignored by libinput.
+See @ref ignoring_devices for more details.
+</dd>
 <dt>ID_SEAT</dt>
-<dd>Assigns the physical seat for this device. See
+<dd>Assigns the physical @ref seats "seat" for this device. See
 libinput_seat_get_physical_name(). Defaults to "seat0".</dd>
 <dt>ID_INPUT</dt>
 <dd>If this property is set, the device is considered an input device. Any
@@ -49,7 +53,7 @@ one of these may be set at any time, libinput will select only one of these
 to determine the device type. To ensure libinput selects the correct device
 type, only set one of them.</dd>
 <dt>WL_SEAT</dt>
-<dd>Assigns the logical seat for this device. See
+<dd>Assigns the logical @ref seats "seat" for this device. See
 libinput_seat_get_logical_name()
 context. Defaults to "default".</dd>
 <dt>MOUSE_DPI</dt>
@@ -105,10 +109,33 @@ ACTION=="add|change", KERNEL=="event[0-9]*", ENV{ID_VENDOR_ID}=="012a", \
 ENV{ID_MODEL_ID}=="034b", ENV{ID_INPUT_TOUCHPAD}="", ENV{ID_INPUT_TABLET}="1"
 @endcode
 
+
+@section ignoring_devices Ignoring specific devices
+
+If a device has the <b>LIBINPUT_IGNORE_DEVICE</b> udev property set to any
+value but "0", that device is not initialized by libinput. For a context
+created with libinput_udev_create_context(), the device is silently ignored
+and never shows up. If the device is added with libinput_path_add_device()
+to a context created with libinput_path_create_context(), adding the device
+will fail and return NULL (see that function's documentation for more
+information).
+
+If the property value is exactly "0", then the property is considered unset
+and libinput initializes the device normally.
+
+This property should be used for devices that are correctly detected as
+input devices (see @ref udev_device_type) but that should not be used by
+libinput. It is recommended that devices that should not be handled as input
+devices at all unset the <b>ID_INPUT</b> and related properties instead. The
+<b>LIBINPUT_IGNORE_DEVICE</b> property signals that only libinput should
+ignore this property but other parts of the stack (if any) should continue
+treating this device normally.
+
+
 @section model_specific_configuration Model-specific configuration
 
 libinput reserves the property prefixes <b>LIBINPUT_MODEL_</b> and
-<b>LIBINPUT_ATTR_*</b> for model-specific configuration. <b>These prefixes
+<b>LIBINPUT_ATTR_</b> for model-specific configuration. <b>These prefixes
 are reserved as private API, do not use.</b>
 
 The effect of these properties may be to enable or disable certain

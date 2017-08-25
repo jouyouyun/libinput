@@ -39,3 +39,16 @@
    ...
    fun:litest_backtrace
 }
+{
+   python:PyUnicode_New
+   Memcheck:Leak
+   ...
+   obj:/usr/lib*/libpython3*.so*
+}
+{
+   libevdev:grab
+   Memcheck:Param
+   ioctl(generic)
+   fun:ioctl
+   fun:libevdev_grab
+}

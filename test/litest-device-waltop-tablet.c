@@ -232,9 +232,9 @@ static const char udev_rule[] =
 "ENV{ID_INPUT_TABLET}==\"\", GOTO=\"waltop_end\"\n"
 "\n"
 "ATTRS{name}==\"litest          WALTOP     Batteryless Tablet*\",\\\n"
-"    ENV{LIBINPUT_ATTR_SIZE_HINT}=\"200x200\",\n"
+"    ENV{LIBINPUT_ATTR_SIZE_HINT}=\"200x200\"\n"
 "\n"
-"LABEL=\"touchpad_end\"";
+"LABEL=\"waltop_end\"";
 
 struct litest_test_device litest_waltop_tablet_device = {
 	.type = LITEST_WALTOP,

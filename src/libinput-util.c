@@ -50,6 +50,9 @@ list_init(struct list *list)
 void
 list_insert(struct list *list, struct list *elm)
 {
+	assert((list->next != NULL && list->prev != NULL) ||
+	       !"list->next|prev is NULL, possibly missing list_init()");
+
 	elm->prev = list;
 	elm->next = list->next;
 	list->next = elm;
@@ -59,6 +62,9 @@ list_insert(struct list *list, struct list *elm)
 void
 list_remove(struct list *elm)
 {
+	assert((elm->next != NULL && elm->prev != NULL) ||
+	       !"list->next|prev is NULL, possibly missing list_init()");
+
 	elm->prev->next = elm->next;
 	elm->next->prev = elm->prev;
 	elm->next = NULL;
@@ -68,6 +74,9 @@ list_remove(struct list *elm)
 bool
 list_empty(const struct list *list)
 {
+	assert((list->next != NULL && list->prev != NULL) ||
+	       !"list->next|prev is NULL, possibly missing list_init()");
+
 	return list->next == list;
 }
 
@@ -144,6 +153,9 @@ parse_mouse_dpi_property(const char *prop)
 	bool is_default = false;
 	int nread, dpi = 0, rate;
 
+	if (!prop)
+		return 0;
+
 	while (*prop != 0) {
 		if (*prop == ' ') {
 			prop++;
@@ -190,6 +202,9 @@ parse_mouse_wheel_click_count_property(const char *prop)
 {
 	int count = 0;
 
+	if (!prop)
+		return 0;
+
 	if (!safe_atoi(prop, &count) || abs(count) > 360)
 		return 0;
 
@@ -211,6 +226,9 @@ parse_mouse_wheel_click_angle_property(const char *prop)
 {
 	int angle = 0;
 
+	if (!prop)
+		return 0;
+
 	if (!safe_atoi(prop, &angle) || abs(angle) > 360)
 		return 0;
 
@@ -229,6 +247,9 @@ double
 parse_trackpoint_accel_property(const char *prop)
 {
 	double accel;
+
+	if (!prop)
+		return 0.0;
 
 	if (!safe_atod(prop, &accel))
 		accel = 0.0;
@@ -264,6 +285,175 @@ parse_dimension_property(const char *prop, size_t *w, size_t *h)
 	*w = (size_t)x;
 	*h = (size_t)y;
 	return true;
+}
+
+/**
+ * Parses a set of 6 space-separated floats.
+ *
+ * @param prop The string value of the property
+ * @param calibration Returns the six components
+ * @return true on success, false otherwise
+ */
+bool
+parse_calibration_property(const char *prop, float calibration_out[6])
+{
+	int idx;
+	char **strv;
+	float calibration[6];
+
+	if (!prop)
+		return false;
+
+	strv = strv_from_string(prop, " ");
+	if (!strv)
+		return false;
+
+	for (idx = 0; idx < 6; idx++) {
+		double v;
+		if (strv[idx] == NULL || !safe_atod(strv[idx], &v)) {
+			strv_free(strv);
+			return false;
+		}
+
+		calibration[idx] = v;
+	}
+
+	strv_free(strv);
+
+	memcpy(calibration_out, calibration, sizeof(calibration));
+
+	return true;
+}
+
+bool
+parse_switch_reliability_property(const char *prop,
+				  enum switch_reliability *reliability)
+{
+	if (!prop) {
+		*reliability = RELIABILITY_UNKNOWN;
+		return true;
+	}
+
+	if (streq(prop, "reliable"))
+		*reliability = RELIABILITY_RELIABLE;
+	else if (streq(prop, "write_open"))
+		*reliability = RELIABILITY_WRITE_OPEN;
+	else
+		return false;
+
+	return true;
+}
+
+/**
+ * Parses a string with the allowed values: "below"
+ * The value refers to the position of the touchpad (relative to the
+ * keyboard, i.e. your average laptop would be 'below')
+ *
+ * @param prop The value of the property
+ * @param layout The layout
+ * @return true on success, false otherwise
+ */
+bool
+parse_tpkbcombo_layout_poperty(const char *prop,
+			       enum tpkbcombo_layout *layout)
+{
+	if (!prop)
+		return false;
+
+	if (streq(prop, "below")) {
+		*layout = TPKBCOMBO_LAYOUT_BELOW;
+		return true;
+	}
+
+	return false;
+}
+
+/**
+ * Parses a string of the format "a:b" where both a and b must be integer
+ * numbers and a > b. Also allowed is the special string vaule "none" which
+ * amounts to unsetting the property.
+ *
+ * @param prop The value of the property
+ * @param hi Set to the first digit or 0 in case of 'none'
+ * @param lo Set to the second digit or 0 in case of 'none'
+ * @return true on success, false otherwise
+ */
+bool
+parse_range_property(const char *prop, int *hi, int *lo)
+{
+	int first, second;
+
+	if (!prop)
+		return false;
+
+	if (streq(prop, "none")) {
+		*hi = 0;
+		*lo = 0;
+		return true;
+	}
+
+	if (sscanf(prop, "%d:%d", &first, &second) != 2)
+		return false;
+
+	if (second >= first)
+		return false;
+
+	*hi = first;
+	*lo = second;
+
+	return true;
+}
+
+/**
+ * Helper function to parse the LIBINPUT_ATTR_PALM_PRESSURE_THRESHOLD
+ * property from udev. Property is of the form:
+ * LIBINPUT_ATTR_PALM_PRESSURE_THRESHOLD=<integer>
+ * Where the number indicates the minimum threshold to consider a touch to
+ * be a palm.
+ *
+ * @param prop The value of the udev property (without the *
+ * LIBINPUT_ATTR_PALM_PRESSURE_THRESHOLD=)
+ * @return The pressure threshold or 0 on error
+ */
+int
+parse_palm_pressure_property(const char *prop)
+{
+	int threshold = 0;
+
+	if (!prop)
+		return 0;
+
+	if (!safe_atoi(prop, &threshold) ||
+	    threshold < 0 ||
+	    threshold > 255) /* No touchpad device has pressure > 255 */
+		return 0;
+
+        return threshold;
+}
+
+/**
+ * Helper function to parse the LIBINPUT_ATTR_PALM_SIZE_THRESHOLD property
+ * from udev. Property is of the form:
+ * LIBINPUT_ATTR_PALM_SIZE_THRESHOLD=<integer>
+ * Where the number indicates the minimum threshold to consider a touch to
+ * be a palm.
+ *
+ * @param prop The value of the udev property (without the
+ * LIBINPUT_ATTR_PALM_SIZE_THRESHOLD=)
+ * @return The pressure threshold or 0 on error
+ */
+int
+parse_palm_size_property(const char *prop)
+{
+	int thr = 0;
+
+	if (!prop)
+		return 0;
+
+	if (!safe_atoi(prop, &thr) || thr < 0 || thr > 2028)
+		return 0;
+
+        return thr;
 }
 
 /**
@@ -329,8 +519,6 @@ strv_from_string(const char *in, const char *separators)
 
 	nelems++; /* NULL-terminated */
 	strv = zalloc(nelems * sizeof *strv);
-	if (!strv)
-		return NULL;
 
 	idx = 0;
 

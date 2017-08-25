@@ -94,16 +94,9 @@ struct phys_coords {
 	double y;
 };
 
-struct tablet_axes {
-	struct device_coords point;
-	struct normalized_coords delta;
-	double distance;
-	double pressure;
-	struct tilt_degrees tilt;
-	double rotation;
-	double slider;
-	double wheel;
-	int wheel_discrete;
+/* A pair of tilt flags */
+struct wheel_tilt_flags {
+	bool vertical, horizontal;
 };
 
 struct libinput_interface_backend {
@@ -143,6 +136,8 @@ struct libinput {
 	int refcount;
 
 	struct list device_group_list;
+
+	uint64_t last_event_time;
 };
 
 typedef void (*libinput_seat_destroy_func) (struct libinput_seat *seat);
@@ -330,6 +325,18 @@ enum libinput_tablet_tool_axis {
 
 #define LIBINPUT_TABLET_TOOL_AXIS_MAX LIBINPUT_TABLET_TOOL_AXIS_REL_WHEEL
 
+struct tablet_axes {
+	struct device_coords point;
+	struct normalized_coords delta;
+	double distance;
+	double pressure;
+	struct tilt_degrees tilt;
+	double rotation;
+	double slider;
+	double wheel;
+	int wheel_discrete;
+};
+
 struct libinput_tablet_tool {
 	struct list link;
 	uint32_t serial;
@@ -460,6 +467,9 @@ libinput_device_group_find_group(struct libinput *libinput,
 void
 libinput_device_set_device_group(struct libinput_device *device,
 				 struct libinput_device_group *group);
+
+void
+libinput_device_init_event_listener(struct libinput_event_listener *listener);
 
 void
 libinput_device_add_event_listener(struct libinput_device *device,
@@ -630,6 +640,11 @@ tablet_pad_notify_strip(struct libinput_device *device,
 			double value,
 			enum libinput_tablet_pad_strip_axis_source source,
 			struct libinput_tablet_pad_mode_group *group);
+void
+switch_notify_toggle(struct libinput_device *device,
+		     uint64_t time,
+		     enum libinput_switch sw,
+		     enum libinput_switch_state state);
 
 static inline uint64_t
 libinput_now(struct libinput *libinput)
@@ -706,6 +721,12 @@ normalized_is_zero(struct normalized_coords norm)
 	return norm.x == 0.0 && norm.y == 0.0;
 }
 
+static inline double
+length_in_mm(struct phys_coords mm)
+{
+	return hypot(mm.x, mm.y);
+}
+
 enum directions {
 	N  = 1 << 0,
 	NE = 1 << 1,
@@ -764,9 +785,9 @@ xy_get_direction(double x, double y)
 }
 
 static inline uint32_t
-normalized_get_direction(struct normalized_coords norm)
+phys_get_direction(struct phys_coords mm)
 {
-	return xy_get_direction(norm.x, norm.y);
+	return xy_get_direction(mm.x, mm.y);
 }
 
 /**

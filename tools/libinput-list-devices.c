@@ -245,16 +245,23 @@ rotation_default(struct libinput_device *device)
 static void
 print_pad_info(struct libinput_device *device)
 {
-	int nbuttons, nrings, nstrips;
+	int nbuttons, nrings, nstrips, ngroups, nmodes;
+	struct libinput_tablet_pad_mode_group *group;
 
 	nbuttons = libinput_device_tablet_pad_get_num_buttons(device);
 	nrings = libinput_device_tablet_pad_get_num_rings(device);
 	nstrips = libinput_device_tablet_pad_get_num_strips(device);
+	ngroups = libinput_device_tablet_pad_get_num_mode_groups(device);
+
+	group = libinput_device_tablet_pad_get_mode_group(device, 0);
+	nmodes = libinput_tablet_pad_mode_group_get_num_modes(group);
 
 	printf("Pad:\n");
 	printf("	Rings:   %d\n", nrings);
 	printf("	Strips:  %d\n", nstrips);
 	printf("	Buttons: %d\n", nbuttons);
+	printf("	Mode groups: %d (%d modes)\n", ngroups, nmodes);
+
 }
 
 static void
@@ -290,7 +297,7 @@ print_device_notify(struct libinput_event *ev)
 	       libinput_seat_get_logical_name(seat));
 
 	if (libinput_device_get_size(dev, &w, &h) == 0)
-		printf("Size:             %.2fx%.2fmm\n", w, h);
+		printf("Size:             %.fx%.fmm\n", w, h);
 	printf("Capabilities:     ");
 	if (libinput_device_has_capability(dev,
 					   LIBINPUT_DEVICE_CAP_KEYBOARD))
@@ -347,27 +354,21 @@ print_device_notify(struct libinput_event *ev)
 static inline void
 usage(void)
 {
-	printf("Usage: %s [--help|--version]\n"
-	       "\n"
-	       "This tool creates a libinput context on the default seat \"seat0\"\n"
-	       "and lists all devices recognized by libinput and the configuration options.\n"
-	       "Where multiple options are possible, the default is prefixed with \"*\".\n"
-	       "\n"
-	       "Options:\n"
-	       "--help ...... show this help\n"
-	       "--version ... show version information\n"
-	       "\n"
-	       "This tool requires access to the /dev/input/eventX nodes.\n",
-	       program_invocation_short_name);
+	printf("Usage: libinput list-devices [--help|--version]\n");
+	printf("\n"
+	       "--help ...... show this help and exit\n"
+	       "--version ... show version information and exit\n"
+	       "\n");
 }
 
 int
 main(int argc, char **argv)
 {
 	struct libinput *li;
-	struct tools_context context;
 	struct libinput_event *ev;
 
+	/* This is kept for backwards-compatibility with the old
+	   libinput-list-devices */
 	if (argc > 1) {
 		if (streq(argv[1], "--help")) {
 			usage();
@@ -381,9 +382,7 @@ main(int argc, char **argv)
 		}
 	}
 
-	tools_init_context(&context);
-
-	li = tools_open_backend(&context);
+	li = tools_open_backend(BACKEND_UDEV, "seat0", false, false);
 	if (!li)
 		return 1;
 
@@ -399,5 +398,5 @@ main(int argc, char **argv)
 
 	libinput_unref(li);
 
-	return 0;
+	return EXIT_SUCCESS;
 }

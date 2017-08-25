@@ -49,7 +49,7 @@ device_added(struct udev_device *udev_device,
 	     const char *seat_name)
 {
 	struct evdev_device *device;
-	const char *devnode;
+	const char *devnode, *sysname;
 	const char *device_seat, *output_name;
 	struct udev_seat *seat;
 
@@ -64,6 +64,7 @@ device_added(struct udev_device *udev_device,
 		return 0;
 
 	devnode = udev_device_get_devnode(udev_device);
+	sysname = udev_device_get_sysname(udev_device);
 
 	/* Search for matching logical seat */
 	if (!seat_name)
@@ -85,18 +86,23 @@ device_added(struct udev_device *udev_device,
 	libinput_seat_unref(&seat->base);
 
 	if (device == EVDEV_UNHANDLED_DEVICE) {
-		log_info(&input->base, "not using input device '%s'.\n", devnode);
+		log_info(&input->base,
+			 "%-7s - not using input device '%s'\n",
+			 sysname,
+			 devnode);
 		return 0;
 	} else if (device == NULL) {
-		log_info(&input->base, "failed to create input device '%s'.\n", devnode);
+		log_info(&input->base,
+			 "%-7s - failed to create input device '%s'\n",
+			 sysname,
+			 devnode);
 		return 0;
 	}
 
 	evdev_read_calibration_prop(device);
 
 	output_name = udev_device_get_property_value(udev_device, "WL_OUTPUT");
-	if (output_name)
-		device->output_name = strdup(output_name);
+	device->output_name = safe_strdup(output_name);
 
 	return 0;
 }
@@ -114,10 +120,6 @@ device_removed(struct udev_device *udev_device, struct udev_input *input)
 				   &seat->base.devices_list, base.link) {
 			if (streq(syspath,
 				  udev_device_get_syspath(device->udev_device))) {
-				log_info(&input->base,
-					 "input device %s, %s removed\n",
-					 device->devname,
-					 udev_device_get_devnode(device->udev_device));
 				evdev_device_remove(device);
 				break;
 			}
@@ -293,8 +295,6 @@ udev_seat_create(struct udev_input *input,
 	struct udev_seat *seat;
 
 	seat = zalloc(sizeof *seat);
-	if (!seat)
-		return NULL;
 
 	libinput_seat_init(&seat->base, &input->base,
 			   device_seat, seat_name,
@@ -322,8 +322,8 @@ udev_device_change_seat(struct libinput_device *device,
 {
 	struct libinput *libinput = device->seat->libinput;
 	struct udev_input *input = (struct udev_input *)libinput;
-	struct evdev_device *evdev_device = (struct evdev_device *)device;
-	struct udev_device *udev_device = evdev_device->udev_device;
+	struct evdev_device *evdev = evdev_device(device);
+	struct udev_device *udev_device = evdev->udev_device;
 	int rc;
 
 	udev_device_ref(udev_device);
@@ -352,8 +352,6 @@ libinput_udev_create_context(const struct libinput_interface *interface,
 		return NULL;
 
 	input = zalloc(sizeof *input);
-	if (!input)
-		return NULL;
 
 	if (libinput_init(&input->base, interface,
 			  &interface_backend, user_data) != 0) {
@@ -375,15 +373,16 @@ libinput_udev_assign_seat(struct libinput *libinput,
 
 	if (!seat_id)
 		return -1;
-	if (input->seat_id != NULL)
-		return -1;
 
 	if (libinput->interface_backend != &interface_backend) {
 		log_bug_client(libinput, "Mismatching backends.\n");
 		return -1;
 	}
 
-	input->seat_id = strdup(seat_id);
+	if (input->seat_id != NULL)
+		return -1;
+
+	input->seat_id = safe_strdup(seat_id);
 
 	if (udev_input_enable(&input->base) < 0)
 		return -1;
