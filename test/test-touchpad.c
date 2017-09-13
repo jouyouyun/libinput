@@ -1428,8 +1428,8 @@ START_TEST(touchpad_no_palm_detect_2fg_scroll)
 	/* first finger is palm, second finger isn't so we trigger 2fg
 	 * scrolling */
 	litest_touch_down(dev, 0, 99, 50);
-	litest_touch_move_to(dev, 0, 99, 50, 99, 40, 10, 0);
-	litest_touch_move_to(dev, 0, 99, 40, 99, 50, 10, 0);
+	litest_touch_move_to(dev, 0, 99, 50, 99, 40, 35, 12);
+	litest_touch_move_to(dev, 0, 99, 40, 99, 50, 35, 12);
 	litest_assert_empty_queue(li);
 	litest_touch_down(dev, 1, 50, 50);
 	litest_assert_empty_queue(li);
@@ -5378,36 +5378,114 @@ END_TEST
 
 START_TEST(touchpad_palm_detect_touch_size)
 {
-       struct litest_device *dev = litest_current_device();
-       struct libinput *li = dev->libinput;
-       struct axis_replacement axes[] = {
-               { ABS_MT_TOUCH_MAJOR, 0 },
-               { ABS_MT_TOUCH_MINOR, 0 },
-               { -1, 0 }
-       };
+	struct litest_device *dev = litest_current_device();
+	struct libinput *li = dev->libinput;
+	struct axis_replacement axes[] = {
+		{ ABS_MT_TOUCH_MAJOR, 0 },
+		{ ABS_MT_TOUCH_MINOR, 0 },
+		{ -1, 0 }
+	};
 
-       if (!touchpad_has_touch_size(dev) ||
-	   litest_touchpad_is_external(dev))
-               return;
+	if (!touchpad_has_touch_size(dev) ||
+	    litest_touchpad_is_external(dev))
+		return;
 
-       litest_drain_events(li);
-       litest_axis_set_value(axes, ABS_MT_TOUCH_MAJOR, 30);
-       litest_axis_set_value(axes, ABS_MT_TOUCH_MINOR, 30);
-       litest_touch_down_extended(dev, 0, 50, 50, axes);
-       litest_touch_move_to_extended(dev, 0,
-                                     50, 50,
-                                     80, 80,
-                                     axes, 10, 1);
-       litest_assert_only_typed_events(li,
-                                       LIBINPUT_EVENT_POINTER_MOTION);
+	litest_drain_events(li);
+	litest_axis_set_value(axes, ABS_MT_TOUCH_MAJOR, 30);
+	litest_axis_set_value(axes, ABS_MT_TOUCH_MINOR, 30);
+	litest_touch_down_extended(dev, 0, 50, 50, axes);
+	litest_touch_move_to_extended(dev, 0,
+				      50, 50,
+				      80, 80,
+				      axes, 10, 1);
+	litest_assert_only_typed_events(li,
+					LIBINPUT_EVENT_POINTER_MOTION);
 
-       litest_axis_set_value_unchecked(axes, ABS_MT_TOUCH_MAJOR, 90);
-       litest_axis_set_value(axes, ABS_MT_TOUCH_MINOR, 90);
-       litest_touch_move_to_extended(dev, 0,
-                                     80, 80,
-                                     50, 50,
-                                     axes, 10, 1);
-       litest_assert_empty_queue(li);
+	litest_axis_set_value_unchecked(axes, ABS_MT_TOUCH_MAJOR, 90);
+	litest_axis_set_value(axes, ABS_MT_TOUCH_MINOR, 90);
+	litest_touch_move_to_extended(dev, 0,
+				      80, 80,
+				      50, 50,
+				      axes, 10, 1);
+	litest_assert_empty_queue(li);
+}
+END_TEST
+
+START_TEST(touchpad_speed_ignore_finger)
+{
+	struct litest_device *dev = litest_current_device();
+	struct libinput *li = dev->libinput;
+
+	if (litest_has_clickfinger(dev))
+		litest_enable_clickfinger(dev);
+
+	litest_drain_events(li);
+
+	litest_touch_down(dev, 0, 20, 20);
+	litest_touch_move_to(dev, 0, 20, 20, 85, 80, 20, 0);
+	litest_touch_down(dev, 1, 20, 80);
+	litest_touch_move_two_touches(dev, 85, 80, 20, 80, -20, -20, 10, 0);
+	libinput_dispatch(li);
+
+	litest_touch_up(dev, 0);
+	litest_touch_up(dev, 1);
+
+	litest_assert_only_typed_events(li, LIBINPUT_EVENT_POINTER_MOTION);
+}
+END_TEST
+
+START_TEST(touchpad_speed_allow_nearby_finger)
+{
+	struct litest_device *dev = litest_current_device();
+	struct libinput *li = dev->libinput;
+
+	if (!litest_has_2fg_scroll(dev))
+		return;
+
+	if (litest_has_clickfinger(dev))
+		litest_enable_clickfinger(dev);
+
+	litest_enable_2fg_scroll(dev);
+
+	litest_drain_events(li);
+
+	litest_touch_down(dev, 0, 20, 20);
+	litest_touch_move_to(dev, 0, 20, 20, 80, 80, 20, 0);
+	litest_drain_events(li);
+	litest_touch_down(dev, 1, 79, 80);
+	litest_touch_move_two_touches(dev, 80, 80, 79, 80, -20, -20, 10, 0);
+	libinput_dispatch(li);
+
+	litest_touch_up(dev, 0);
+	litest_touch_up(dev, 1);
+
+	litest_assert_only_typed_events(li, LIBINPUT_EVENT_POINTER_AXIS);
+}
+END_TEST
+
+START_TEST(touchpad_speed_ignore_finger_edgescroll)
+{
+	struct litest_device *dev = litest_current_device();
+	struct libinput *li = dev->libinput;
+
+	litest_enable_edge_scroll(dev);
+	if (litest_has_clickfinger(dev))
+		litest_enable_clickfinger(dev);
+
+	litest_drain_events(li);
+
+	litest_touch_down(dev, 0, 20, 20);
+	litest_touch_move_to(dev, 0, 20, 20, 60, 80, 20, 0);
+	litest_drain_events(li);
+	litest_touch_down(dev, 1, 59, 80);
+	litest_touch_move_two_touches(dev, 60, 80, 59, 80, -20, -20, 10, 0);
+	libinput_dispatch(li);
+
+	litest_touch_up(dev, 0);
+	libinput_dispatch(li);
+	litest_touch_up(dev, 1);
+
+	litest_assert_only_typed_events(li, LIBINPUT_EVENT_POINTER_MOTION);
 }
 END_TEST
 
@@ -5576,4 +5654,8 @@ litest_setup_tests_touchpad(void)
 
 	litest_add("touchpad:touch-size", touchpad_touch_size, LITEST_APPLE_CLICKPAD, LITEST_ANY);
 	litest_add("touchpad:touch-size", touchpad_touch_size_2fg, LITEST_APPLE_CLICKPAD, LITEST_ANY);
+
+	litest_add("touchpad:speed", touchpad_speed_ignore_finger, LITEST_TOUCHPAD, LITEST_SINGLE_TOUCH|LITEST_SEMI_MT);
+	litest_add("touchpad:speed", touchpad_speed_allow_nearby_finger, LITEST_TOUCHPAD, LITEST_SINGLE_TOUCH|LITEST_SEMI_MT);
+	litest_add("touchpad:speed", touchpad_speed_ignore_finger_edgescroll, LITEST_TOUCHPAD, LITEST_SINGLE_TOUCH|LITEST_SEMI_MT);
 }

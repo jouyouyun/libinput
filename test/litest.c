@@ -416,6 +416,8 @@ extern struct litest_test_device litest_lid_switch_surface3_device;
 extern struct litest_test_device litest_appletouch_device;
 extern struct litest_test_device litest_gpio_keys_device;
 extern struct litest_test_device litest_ignored_mouse_device;
+extern struct litest_test_device litest_wacom_mobilestudio_13hdt_pad_device;
+extern struct litest_test_device litest_thinkpad_extrabuttons_device;
 
 struct litest_test_device* devices[] = {
 	&litest_synaptics_clickpad_device,
@@ -483,6 +485,8 @@ struct litest_test_device* devices[] = {
 	&litest_appletouch_device,
 	&litest_gpio_keys_device,
 	&litest_ignored_mouse_device,
+	&litest_wacom_mobilestudio_13hdt_pad_device,
+	&litest_thinkpad_extrabuttons_device,
 	NULL,
 };
 
@@ -1864,7 +1868,7 @@ litest_touch_move_to(struct litest_device *d,
 		     double x_to, double y_to,
 		     int steps, int sleep_ms)
 {
-	for (int i = 1; i < steps - 1; i++) {
+	for (int i = 1; i < steps; i++) {
 		litest_touch_move(d, slot,
 				  x_from + (x_to - x_from)/steps * i,
 				  y_from + (y_to - y_from)/steps * i);
@@ -2177,10 +2181,24 @@ litest_keyboard_key(struct litest_device *d, unsigned int key, bool is_press)
 }
 
 void
-litest_lid_action(struct litest_device *dev,
-		  enum libinput_switch_state state)
+litest_switch_action(struct litest_device *dev,
+		     enum libinput_switch sw,
+		     enum libinput_switch_state state)
 {
-	litest_event(dev, EV_SW, SW_LID, state);
+	unsigned int code;
+
+	switch (sw) {
+	case LIBINPUT_SWITCH_LID:
+		code = SW_LID;
+		break;
+	case LIBINPUT_SWITCH_TABLET_MODE:
+		code = SW_TABLET_MODE;
+		break;
+	default:
+		litest_abort_msg("Invalid switch %d", sw);
+		break;
+	}
+	litest_event(dev, EV_SW, code, state);
 	litest_event(dev, EV_SYN, SYN_REPORT, 0);
 }
 

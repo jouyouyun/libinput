@@ -236,6 +236,8 @@ enum litest_device_type {
 	LITEST_APPLETOUCH,
 	LITEST_GPIO_KEYS,
 	LITEST_IGNORED_MOUSE,
+	LITEST_WACOM_MOBILESTUDIO_PRO_16_PAD,
+	LITEST_THINKPAD_EXTRABUTTONS,
 };
 
 enum litest_device_feature {
@@ -578,8 +580,9 @@ litest_keyboard_key(struct litest_device *d,
 		    unsigned int key,
 		    bool is_press);
 
-void litest_lid_action(struct litest_device *d,
-		       enum libinput_switch_state state);
+void litest_switch_action(struct litest_device *d,
+			  enum libinput_switch sw,
+			  enum libinput_switch_state state);
 
 void
 litest_wait_for_event(struct libinput *li);
@@ -854,6 +857,15 @@ litest_enable_edge_scroll(struct litest_device *dev)
 
 	expected = LIBINPUT_CONFIG_STATUS_SUCCESS;
 	litest_assert_int_eq(status, expected);
+}
+
+static inline bool
+litest_has_clickfinger(struct litest_device *dev)
+{
+	struct libinput_device *device = dev->libinput_device;
+	uint32_t methods = libinput_device_config_click_get_methods(device);
+
+	return methods & LIBINPUT_CONFIG_CLICK_METHOD_CLICKFINGER;
 }
 
 static inline void

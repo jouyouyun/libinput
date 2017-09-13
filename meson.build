@@ -156,7 +156,6 @@ src_libinput = [
 	'src/libinput-private.h',
 	'src/evdev.c',
 	'src/evdev.h',
-	'src/evdev-lid.c',
 	'src/evdev-middle-button.c',
 	'src/evdev-mt-touchpad.c',
 	'src/evdev-mt-touchpad.h',
@@ -566,6 +565,7 @@ if get_option('tests')
 		'test/litest-device-synaptics-st.c',
 		'test/litest-device-synaptics-t440.c',
 		'test/litest-device-synaptics-x1-carbon-3rd.c',
+		'test/litest-device-thinkpad-extrabuttons.c',
 		'test/litest-device-trackpoint.c',
 		'test/litest-device-touch-screen.c',
 		'test/litest-device-touchscreen-fuzz.c',
@@ -584,6 +584,7 @@ if get_option('tests')
 		'test/litest-device-wacom-intuos5-pen.c',
 		'test/litest-device-wacom-isdv4-e6-pen.c',
 		'test/litest-device-wacom-isdv4-e6-finger.c',
+		'test/litest-device-wacom-mobilestudio-pro-pad.c',
 		'test/litest-device-waltop-tablet.c',
 		'test/litest-device-wheel-only.c',
 		'test/litest-device-xen-virtual-pointer.c',
@@ -668,7 +669,7 @@ if get_option('tests')
 		'test/test-keyboard.c',
 		'test/test-device.c',
 		'test/test-gestures.c',
-		'test/test-lid.c'
+		'test/test-switch.c'
 	]
 	def_LT_VERSION = '-DLIBINPUT_LT_VERSION="@0@:@1@:@2@"'.format(libinput_lt_c, libinput_lt_r, libinput_lt_a)
 	libinput_test_runner = executable('libinput-test-suite-runner',

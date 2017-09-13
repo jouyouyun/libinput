@@ -986,7 +986,6 @@ main(int argc, char **argv)
 			verbose = true;
 			break;
 		default:
-			printf(".. %c\n", c);
 			if (tools_parse_option(c, optarg, &options) != 0) {
 				usage();
 				return 1;

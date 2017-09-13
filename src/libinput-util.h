@@ -50,6 +50,7 @@
 #define PRODUCT_ID_APPLE_KBD_TOUCHPAD 0x273
 #define PRODUCT_ID_APPLE_APPLETOUCH 0x21a
 #define PRODUCT_ID_SYNAPTICS_SERIAL 0x007
+#define PRODUCT_ID_WACOM_EKR 0x0331
 
 /* The HW DPI rate we normalize to before calculating pointer acceleration */
 #define DEFAULT_MOUSE_DPI 1000
@@ -473,13 +474,15 @@ tv2us(const struct timeval *tv)
 }
 
 static inline bool
-safe_atoi(const char *str, int *val)
+safe_atoi_base(const char *str, int *val, int base)
 {
 	char *endptr;
 	long v;
 
+	assert(base == 10 || base == 16 || base == 8);
+
 	errno = 0;
-	v = strtol(str, &endptr, 10);
+	v = strtol(str, &endptr, base);
 	if (errno > 0)
 		return false;
 	if (str == endptr)
@@ -492,6 +495,12 @@ safe_atoi(const char *str, int *val)
 
 	*val = v;
 	return true;
+}
+
+static inline bool
+safe_atoi(const char *str, int *val)
+{
+	return safe_atoi_base(str, val, 10);
 }
 
 static inline bool
