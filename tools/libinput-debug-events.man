@@ -62,10 +62,13 @@ Enable or disable natural scrolling
 .B \-\-enable\-left\-handed|\-\-disable\-left\-handed
 Enable or disable left handed button configuration
 .TP 8
+.B \-\-enable\-middlebutton|\-\-disable\-middlebutton
+Enable or disable middle button emulation
+.TP 8
 .B \-\-enable\-dwt|\-\-disable\-dwt
 Enable or disable disable-while-typing
 .TP 8
-.B \-\-set\-click\-method=[none|clickfinger|buttons]
+.B \-\-set\-click\-method=[none|clickfinger|buttonareas]
 Set the desired click method
 .TP 8
 .B \-\-set\-scroll\-method=[none|twofinger|edge|button]

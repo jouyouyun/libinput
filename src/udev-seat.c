@@ -150,6 +150,17 @@ udev_input_add_devices(struct udev_input *input, struct udev *udev)
 			continue;
 		}
 
+		/* Skip unconfigured device. udev will send an event
+		 * when device is fully configured  */
+		if (!udev_device_get_is_initialized(device)) {
+			log_debug(&input->base,
+				  "%-7s - skip unconfigured input device '%s'\n",
+				  sysname,
+				  udev_device_get_devnode(device));
+			udev_device_unref(device);
+			continue;
+		}
+
 		if (device_added(device, input, NULL) < 0) {
 			udev_device_unref(device);
 			udev_enumerate_unref(e);
@@ -229,7 +240,7 @@ udev_input_enable(struct libinput *libinput)
 	struct udev *udev = input->udev;
 	int fd;
 
-	if (input->udev_monitor)
+	if (input->udev_monitor || !input->seat_id)
 		return 0;
 
 	input->udev_monitor = udev_monitor_new_from_netlink(udev, "udev");
@@ -370,6 +381,13 @@ libinput_udev_assign_seat(struct libinput *libinput,
 			  const char *seat_id)
 {
 	struct udev_input *input = (struct udev_input*)libinput;
+
+	/* We cannot do this during udev_create_context because the log
+	 * handler isn't set up there but we really want to log to the right
+	 * place if the quirks run into parser errors. So we have to do it
+	 * here since we can expect the log handler to be set up by now.
+	 */
+	libinput_init_quirks(libinput);
 
 	if (!seat_id)
 		return -1;

@@ -28,6 +28,7 @@
 #include <fcntl.h>
 #include <libinput.h>
 #include <unistd.h>
+#include <stdarg.h>
 
 #include "litest.h"
 
@@ -199,8 +200,7 @@ START_TEST(log_axisrange_warning)
 }
 END_TEST
 
-void
-litest_setup_tests_log(void)
+TEST_COLLECTION(log)
 {
 	struct range axes = { ABS_X, ABS_Y + 1};
 

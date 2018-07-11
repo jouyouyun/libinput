@@ -1,5 +1,5 @@
 project('libinput', 'c', 'cpp',
-	version : '1.9.0',
+	version : '1.11.900',
 	license : 'MIT/Expat',
 	default_options : [ 'c_std=gnu99', 'warning_level=2' ],
 	meson_version : '>= 0.40.0')
@@ -39,6 +39,21 @@ if cc.get_define('static_assert', prefix : prefix) == ''
 	config_h.set('static_assert(...)', '/* */')
 endif
 
+# Coverity breaks because it doesn't define _Float128 correctly, you'll end
+# up with a bunch of messages in the form:
+# "/usr/include/stdlib.h", line 133: error #20: identifier "_Float128" is
+#           undefined
+#   extern _Float128 strtof128 (const char *__restrict __nptr,
+#          ^
+# We don't use float128 ourselves, it gets pulled in from math.h or
+# something, so let's just define it as uint128 and move on.
+# Unfortunately we can't detect the coverity build at meson configure
+# time, we only know it fails at runtime. So make this an option instead, to
+# be removed when coverity fixes this again.
+if get_option('coverity')
+	config_h.set('_Float128', '__uint128_t')
+endif
+
 # Dependencies
 pkgconfig = import('pkgconfig')
 dep_udev = dependency('libudev')
@@ -66,6 +81,15 @@ if have_libwacom
 			  name : 'libwacom_get_paired_device check',
 			  dependencies : dep_libwacom)
 	config_h.set10('HAVE_LIBWACOM_GET_PAIRED_DEVICE', result)
+
+	code = '''
+	#include <libwacom/libwacom.h>
+	int main(void) { libwacom_get_button_evdev_code(NULL, 'A'); }
+	'''
+	result = cc.links(code,
+			  name : 'libwacom_get_button_evdev_code check',
+			  dependencies : dep_libwacom)
+	config_h.set10('HAVE_LIBWACOM_GET_BUTTON_EVDEV_CODE', result)
 else
 	dep_libwacom = declare_dependency()
 endif
@@ -87,7 +111,7 @@ executable('libinput-device-group',
 	   install_dir : udev_dir)
 executable('libinput-model-quirks',
 	   'udev/libinput-model-quirks.c',
-	   dependencies : dep_udev,
+	   dependencies : [dep_udev, dep_libevdev],
 	   include_directories : [includes_src, includes_include],
 	   install : true,
 	   install_dir : udev_dir)
@@ -142,21 +166,83 @@ dep_libinput_util = declare_dependency(link_with : libinput_util)
 ############ libfilter.a ############
 src_libfilter = [
 		'src/filter.c',
+		'src/filter-flat.c',
+		'src/filter-low-dpi.c',
+		'src/filter-mouse.c',
+		'src/filter-touchpad.c',
+		'src/filter-touchpad-x230.c',
+		'src/filter-tablet.c',
+		'src/filter-trackpoint.c',
 		'src/filter.h',
 		'src/filter-private.h'
 ]
-libfilter = static_library('filter', src_libfilter)
+libfilter = static_library('filter', src_libfilter,
+			   dependencies : dep_udev,
+			   include_directories : includes_include)
 dep_libfilter = declare_dependency(link_with : libfilter)
+
+############ libquirks.a #############
+libinput_data_path = join_paths(get_option('prefix'), get_option('datadir'), 'libinput')
+libinput_data_override_path = join_paths(get_option('prefix'),
+					 get_option('sysconfdir'),
+					 'libinput',
+					 'local-overrides.quirks')
+config_h.set_quoted('LIBINPUT_DATA_DIR', libinput_data_path)
+config_h.set_quoted('LIBINPUT_DATA_OVERRIDE_FILE', libinput_data_override_path)
+
+quirks_data = [
+	'data/10-generic-keyboard.quirks',
+	'data/10-generic-lid.quirks',
+	'data/10-generic-trackball.quirks',
+	'data/30-vendor-aiptek.quirks',
+	'data/30-vendor-alps.quirks',
+	'data/30-vendor-cyapa.quirks',
+	'data/30-vendor-elantech.quirks',
+	'data/30-vendor-huion.quirks',
+	'data/30-vendor-ibm.quirks',
+	'data/30-vendor-logitech.quirks',
+	'data/30-vendor-microsoft.quirks',
+	'data/30-vendor-razer.quirks',
+	'data/30-vendor-synaptics.quirks',
+	'data/30-vendor-wacom.quirks',
+	'data/50-system-apple.quirks',
+	'data/50-system-asus.quirks',
+	'data/50-system-chicony.quirks',
+	'data/50-system-cyborg.quirks',
+	'data/50-system-dell.quirks',
+	'data/50-system-google.quirks',
+	'data/50-system-hp.quirks',
+	'data/50-system-lenovo.quirks',
+	'data/50-system-system76.quirks',
+]
+
+config_h.set_quoted('LIBINPUT_DATA_FILES', ':'.join(quirks_data))
+config_h.set_quoted('LIBINPUT_DATA_SRCDIR', join_paths(meson.source_root(), 'data'))
+
+install_data(quirks_data, install_dir : libinput_data_path)
+
+src_libquirks = [
+	'src/quirks.c',
+	'src/quirks.h',
+]
+
+deps_libquirks = [dep_udev, dep_libinput_util]
+libquirks = static_library('quirks', src_libquirks,
+			   dependencies : deps_libquirks,
+			   include_directories : includes_include)
+dep_libquirks = declare_dependency(link_with : libquirks)
 
 ############ libinput.so ############
 install_headers('src/libinput.h')
-src_libinput = [
+src_libinput = src_libfilter + [
 	'src/libinput.c',
 	'src/libinput.h',
 	'src/libinput-private.h',
 	'src/evdev.c',
 	'src/evdev.h',
+	'src/evdev-debounce.c',
 	'src/evdev-fallback.c',
+	'src/evdev-fallback.h',
 	'src/evdev-middle-button.c',
 	'src/evdev-mt-touchpad.c',
 	'src/evdev-mt-touchpad.h',
@@ -169,9 +255,6 @@ src_libinput = [
 	'src/evdev-tablet-pad.c',
 	'src/evdev-tablet-pad.h',
 	'src/evdev-tablet-pad-leds.c',
-	'src/filter.c',
-	'src/filter.h',
-	'src/filter-private.h',
 	'src/path-seat.h',
 	'src/path-seat.c',
 	'src/udev-seat.c',
@@ -180,6 +263,7 @@ src_libinput = [
 	'src/timer.h',
 	'include/linux/input.h'
 ]
+
 deps_libinput = [
 	dep_mtdev,
 	dep_udev,
@@ -187,7 +271,8 @@ deps_libinput = [
 	dep_lm,
 	dep_rt,
 	dep_libwacom,
-	dep_libinput_util
+	dep_libinput_util,
+	dep_libquirks
 ]
 
 libinput_version_h_config = configuration_data()
@@ -227,16 +312,31 @@ pkgconfig.generate(
 	libraries : lib_libinput
 )
 
-# Restore the SELinux context for the libinput.so.a.b.c on install
-# meson bug https://github.com/mesonbuild/meson/issues/1967
-meson.add_install_script('src/libinput-restore-selinux-context.sh',
-			 get_option('libdir'),
-			 lib_libinput.full_path())
+git_version_h = vcs_tag(command : ['git', 'describe'],
+			fallback : 'unknown',
+			input : 'src/libinput-git-version.h.in',
+			output :'libinput-git-version.h')
+
+if meson.version().version_compare('<0.4.3.0')
+	# Restore the SELinux context for the libinput.so.a.b.c on install
+	# meson bug https://github.com/mesonbuild/meson/issues/1967
+	meson.add_install_script('src/libinput-restore-selinux-context.sh',
+				 join_paths(get_option('prefix'), get_option('libdir')),
+				 lib_libinput.full_path())
+endif
 
 ############ documentation ############
 
 if get_option('documentation')
-	doxygen = find_program('doxygen')
+	doxygen = find_program('doxygen', required : false)
+	if not doxygen.found()
+		error('Program "doxygen" not found or not executable. Try building with -Ddocumentation=false')
+	endif
+	dot = find_program('dot', required : false)
+	if not dot.found()
+		error('Program "dot" not found or not executable. Try building with -Ddocumentation=false')
+	endif
+
 	doxygen_version_cmd = run_command(doxygen.path(), '--version')
 	if doxygen_version_cmd.returncode() != 0
 		error('Command "doxygen --version" failed.')
@@ -245,7 +345,6 @@ if get_option('documentation')
 	if doxygen_version.version_compare('< 1.8.3')
 		error('doxygen needs to be at least version 1.8.3 (have @0@)'.format(doxygen_version))
 	endif
-	dot = find_program('dot')
 	grep = find_program('grep')
 	dot_version_cmd = run_command(dot.path(), '-V')
 	if dot_version_cmd.returncode() != 0
@@ -264,11 +363,13 @@ if get_option('documentation')
 		# written docs
 		meson.source_root() + '/doc/absolute-axes.dox',
 		meson.source_root() + '/doc/absolute-coordinate-ranges.dox',
+		meson.source_root() + '/doc/architecture.dox',
 		meson.source_root() + '/doc/building.dox',
 		meson.source_root() + '/doc/button_debouncing.dox',
 		meson.source_root() + '/doc/clickpad-softbuttons.dox',
 		meson.source_root() + '/doc/contributing.dox',
 		meson.source_root() + '/doc/device-configuration-via-udev.dox',
+		meson.source_root() + '/doc/device-quirks.dox',
 		meson.source_root() + '/doc/faqs.dox',
 		meson.source_root() + '/doc/gestures.dox',
 		meson.source_root() + '/doc/middle-button-emulation.dox',
@@ -288,7 +389,9 @@ if get_option('documentation')
 		meson.source_root() + '/doc/tools.dox',
 		meson.source_root() + '/doc/touchpad-jumping-cursors.dox',
 		meson.source_root() + '/doc/touchpad-pressure.dox',
+		meson.source_root() + '/doc/touchpad-jitter.dox',
 		meson.source_root() + '/doc/touchpads.dox',
+		meson.source_root() + '/doc/trackpoints.dox',
 		meson.source_root() + '/doc/what-is-libinput.dox',
 		# dot drawings
 		meson.source_root() + '/doc/dot/seats-sketch.gv',
@@ -298,6 +401,7 @@ if get_option('documentation')
 		meson.source_root() + '/doc/dot/libinput-stack-gnome.gv',
 		meson.source_root() + '/doc/dot/evemu.gv',
 		# svgs
+		meson.source_root() + '/doc/svg/button-debouncing-wave-diagram.svg',
 		meson.source_root() + '/doc/svg/button-scrolling.svg',
 		meson.source_root() + '/doc/svg/clickfinger.svg',
 		meson.source_root() + '/doc/svg/clickfinger-distance.svg',
@@ -384,6 +488,26 @@ configure_file(input : 'tools/libinput-debug-events.man',
 	       install_dir : join_paths(get_option('mandir'), 'man1')
 	       )
 
+libinput_list_quirks_sources = [ 'tools/libinput-list-quirks.c' ]
+libinput_list_quirks = executable('libinput-list-quirks',
+				  libinput_list_quirks_sources,
+				  dependencies : [dep_libquirks, dep_libinput],
+				  include_directories : [includes_src, includes_include],
+				  install_dir : libinput_tool_path,
+				  install : true
+				 )
+test('validate-quirks',
+     libinput_list_quirks,
+     args: ['--validate-only', '--data-dir=@0@'.format(join_paths(meson.source_root(), 'data'))]
+     )
+
+configure_file(input : 'tools/libinput-list-quirks.man',
+	       output : 'libinput-list-quirks.1',
+	       configuration : man_config,
+	       install : true,
+	       install_dir : join_paths(get_option('mandir'), 'man1')
+	       )
+
 libinput_list_devices_sources = [ 'tools/libinput-list-devices.c' ]
 executable('libinput-list-devices',
 	   libinput_list_devices_sources,
@@ -414,14 +538,17 @@ configure_file(input : 'tools/libinput-measure.man',
 	       install_dir : join_paths(get_option('mandir'), 'man1')
 	       )
 
-libinput_measure_touchpad_tap_sources = [ 'tools/libinput-measure-touchpad-tap.c' ]
-executable('libinput-measure-touchpad-tap',
-	   libinput_measure_touchpad_tap_sources,
-	   dependencies : deps_tools,
-	   include_directories : [includes_src, includes_include],
-	   install_dir : libinput_tool_path,
-	   install : true,
-	   )
+install_data('tools/libinput-measure-fuzz',
+	     install_dir : libinput_tool_path)
+configure_file(input : 'tools/libinput-measure-fuzz.man',
+	       output : 'libinput-measure-fuzz.1',
+	       configuration : man_config,
+	       install : true,
+	       install_dir : join_paths(get_option('mandir'), 'man1')
+	       )
+
+install_data('tools/libinput-measure-touchpad-tap',
+	     install_dir : libinput_tool_path)
 configure_file(input : 'tools/libinput-measure-touchpad-tap.man',
 	       output : 'libinput-measure-touchpad-tap.1',
 	       configuration : man_config,
@@ -455,8 +582,32 @@ configure_file(input : 'tools/libinput-measure-trackpoint-range.man',
 	       install_dir : join_paths(get_option('mandir'), 'man1')
 	       )
 
+libinput_record_sources = [ 'tools/libinput-record.c', git_version_h ]
+executable('libinput-record',
+	   libinput_record_sources,
+	   dependencies : deps_tools + [dep_udev],
+	   include_directories : [includes_src, includes_include],
+	   install_dir : libinput_tool_path,
+	   install : true,
+	   )
+configure_file(input : 'tools/libinput-record.man',
+	       output : 'libinput-record.1',
+	       configuration : man_config,
+	       install : true,
+	       install_dir : join_paths(get_option('mandir'), 'man1')
+	       )
+
+install_data('tools/libinput-replay',
+	     install_dir : libinput_tool_path)
+configure_file(input : 'tools/libinput-replay.man',
+	       output : 'libinput-replay.1',
+	       configuration : man_config,
+	       install : true,
+	       install_dir : join_paths(get_option('mandir'), 'man1')
+	       )
+
 if get_option('debug-gui')
-	dep_gtk = dependency('gtk+-3.0')
+	dep_gtk = dependency('gtk+-3.0', version : '>= 3.20')
 	dep_cairo = dependency('cairo')
 	dep_glib = dependency('glib-2.0')
 
@@ -496,8 +647,6 @@ configure_file(input : 'tools/libinput.man',
 	       install_dir : join_paths(get_option('mandir'), 'man1')
 	       )
 
-meson.add_install_script('tools/install-compat-scripts.sh')
-
 ptraccel_debug_sources = [ 'tools/ptraccel-debug.c' ]
 executable('ptraccel-debug',
 	   ptraccel_debug_sources,
@@ -508,6 +657,40 @@ executable('ptraccel-debug',
 
 ############ tests ############
 
+test_symbols_leak = find_program('test/symbols-leak-test.in')
+test('symbols-leak-test',
+     test_symbols_leak,
+     args : [ meson.current_source_dir() ])
+
+# build-test only
+executable('test-build-pedantic',
+	   'test/build-pedantic.c',
+	   dependencies : [dep_udev],
+	   include_directories : [includes_src, includes_include],
+	   c_args : ['-std=c99', '-pedantic', '-Werror'],
+	   install : false)
+# build-test only
+executable('test-build-std-gnuc90',
+	   'test/build-pedantic.c',
+	   dependencies : [dep_udev],
+	   include_directories : [includes_src, includes_include],
+	   c_args : ['-std=gnu90', '-Werror'],
+	   install : false)
+# test for linking with the minimal linker flags
+executable('test-build-linker',
+	   'test/build-pedantic.c',
+	   include_directories : [includes_src, includes_include],
+	   dependencies : [ dep_libinput, dep_libinput_util ],
+	   install : false)
+# test including from C++
+executable('test-build-cxx',
+	   'test/build-cxx.cc',
+	   dependencies : [dep_udev],
+	   include_directories : [includes_src, includes_include],
+	   install : false)
+
+# This is the test suite runner, we allow disabling that one because of
+# dependencies
 if get_option('tests')
 	dep_check = dependency('check', version : '>= 0.9.10')
 	valgrind = find_program('valgrind')
@@ -518,14 +701,22 @@ if get_option('tests')
 		config_h.set_quoted('ADDR2LINE', addr2line.path())
 	endif
 
+	leftover_rules = find_program('test/check-leftover-udev-rules.sh')
+	test('leftover-rules', leftover_rules, is_parallel : false)
+
 	dep_libunwind = dependency('libunwind', required : false)
 	config_h.set10('HAVE_LIBUNWIND', dep_libunwind.found())
+
+	# for inhibit support during test run
+	dep_libsystemd = dependency('libsystemd', version : '>= 221', required : false)
+	config_h.set10('HAVE_LIBSYSTEMD', dep_libsystemd.found())
 
 	lib_litest_sources = [
 		'test/litest.h',
 		'test/litest-int.h',
 		'test/litest-device-acer-hawaii-keyboard.c',
 		'test/litest-device-acer-hawaii-touchpad.c',
+		'test/litest-device-aiptek-tablet.c',
 		'test/litest-device-alps-semi-mt.c',
 		'test/litest-device-alps-dualpoint.c',
 		'test/litest-device-anker-mouse-kbd.c',
@@ -541,6 +732,7 @@ if get_option('tests')
 		'test/litest-device-generic-singletouch.c',
 		'test/litest-device-gpio-keys.c',
 		'test/litest-device-huion-pentablet.c',
+		'test/litest-device-hp-wmi-hotkeys.c',
 		'test/litest-device-ignored-mouse.c',
 		'test/litest-device-keyboard.c',
 		'test/litest-device-keyboard-all-codes.c',
@@ -558,6 +750,7 @@ if get_option('tests')
 		'test/litest-device-mouse-low-dpi.c',
 		'test/litest-device-mouse-wheel-click-angle.c',
 		'test/litest-device-mouse-wheel-click-count.c',
+		'test/litest-device-ms-nano-transceiver-mouse.c',
 		'test/litest-device-ms-surface-cover.c',
 		'test/litest-device-protocol-a-touch-screen.c',
 		'test/litest-device-qemu-usb-tablet.c',
@@ -571,6 +764,7 @@ if get_option('tests')
 		'test/litest-device-thinkpad-extrabuttons.c',
 		'test/litest-device-trackpoint.c',
 		'test/litest-device-touch-screen.c',
+		'test/litest-device-touchscreen-invalid-range.c',
 		'test/litest-device-touchscreen-fuzz.c',
 		'test/litest-device-uclogic-tablet.c',
 		'test/litest-device-wacom-bamboo-2fg-finger.c',
@@ -608,7 +802,9 @@ if get_option('tests')
 		dep_udev,
 		dep_libevdev,
 		dep_dl,
-		dep_lm
+		dep_lm,
+		dep_libsystemd,
+		dep_libquirks,
 	]
 
 	configure_file(input : 'udev/80-libinput-test-device.rules',
@@ -651,11 +847,6 @@ if get_option('tests')
 					  install : false)
 	test('test-litest-selftest', test_litest_selftest)
 
-	test_symbols_leak = find_program('test/symbols-leak-test.in')
-	test('symbols-leak-test',
-	     test_symbols_leak,
-	     args : [ meson.current_source_dir() ])
-
 	libinput_test_runner_sources = lib_litest_sources + [
 		'src/libinput-util.h',
 		'src/libinput-util.c',
@@ -675,7 +866,8 @@ if get_option('tests')
 		'test/test-keyboard.c',
 		'test/test-device.c',
 		'test/test-gestures.c',
-		'test/test-switch.c'
+		'test/test-switch.c',
+		'test/test-quirks.c',
 	]
 	def_LT_VERSION = '-DLIBINPUT_LT_VERSION="@0@:@1@:@2@"'.format(libinput_lt_c, libinput_lt_r, libinput_lt_a)
 	libinput_test_runner = executable('libinput-test-suite-runner',
@@ -687,30 +879,6 @@ if get_option('tests')
 	test('libinput-test-suite-runner',
 	     libinput_test_runner,
 	     timeout : 1200)
-
-	# build-test only
-        executable('test-build-pedantic',
-		   'test/build-pedantic.c',
-		   include_directories : [includes_src, includes_include],
-		   c_args : ['-std=c99', '-pedantic', '-Werror'],
-		   install : false)
-	# build-test only
-        executable('test-build-std-gnuc90',
-		   'test/build-pedantic.c',
-		   include_directories : [includes_src, includes_include],
-		   c_args : ['-std=gnu90', '-Werror'],
-		   install : false)
-	# test for linking with the minimal linker flags
-        executable('test-build-linker',
-		   'test/build-pedantic.c',
-		   include_directories : [includes_src, includes_include],
-		   dependencies : [ dep_libinput, dep_libinput_util ],
-		   install : false)
-	# test including from C++
-	executable('test-build-cxx',
-		   'test/build-cxx.cc',
-		   include_directories : [includes_src, includes_include],
-		   install : false)
 
 	valgrind_env = environment()
 	valgrind_env.set('CK_FORK', 'no')

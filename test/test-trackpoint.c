@@ -43,9 +43,9 @@ START_TEST(trackpoint_middlebutton)
 	litest_drain_events(li);
 
 	/* A quick middle button click should get reported normally */
-	litest_button_click(dev, BTN_MIDDLE, 1);
+	litest_button_click_debounced(dev, li, BTN_MIDDLE, 1);
 	msleep(2);
-	litest_button_click(dev, BTN_MIDDLE, 0);
+	litest_button_click_debounced(dev, li, BTN_MIDDLE, 0);
 
 	litest_wait_for_event(li);
 
@@ -173,7 +173,7 @@ START_TEST(trackpoint_topsoftbuttons_left_handed_trackpoint)
 
 	litest_touch_down(touchpad, 0, 5, 5);
 	libinput_dispatch(li);
-	litest_button_click(touchpad, BTN_LEFT, true);
+	litest_button_click_debounced(touchpad, li, BTN_LEFT, true);
 	libinput_dispatch(li);
 
 	event = libinput_get_event(li);
@@ -184,7 +184,7 @@ START_TEST(trackpoint_topsoftbuttons_left_handed_trackpoint)
 	ck_assert(device == trackpoint->libinput_device);
 	libinput_event_destroy(event);
 
-	litest_button_click(touchpad, BTN_LEFT, false);
+	litest_button_click_debounced(touchpad, li, BTN_LEFT, false);
 	libinput_dispatch(li);
 	event = libinput_get_event(li);
 	litest_is_button_event(event,
@@ -216,7 +216,7 @@ START_TEST(trackpoint_topsoftbuttons_left_handed_touchpad)
 
 	litest_touch_down(touchpad, 0, 5, 5);
 	libinput_dispatch(li);
-	litest_button_click(touchpad, BTN_LEFT, true);
+	litest_button_click_debounced(touchpad, li, BTN_LEFT, true);
 	libinput_dispatch(li);
 
 	event = libinput_get_event(li);
@@ -225,7 +225,7 @@ START_TEST(trackpoint_topsoftbuttons_left_handed_touchpad)
 	ck_assert(device == trackpoint->libinput_device);
 	libinput_event_destroy(event);
 
-	litest_button_click(touchpad, BTN_LEFT, false);
+	litest_button_click_debounced(touchpad, li, BTN_LEFT, false);
 	libinput_dispatch(li);
 	event = libinput_get_event(li);
 	litest_is_button_event(event,
@@ -260,7 +260,7 @@ START_TEST(trackpoint_topsoftbuttons_left_handed_both)
 
 	litest_touch_down(touchpad, 0, 5, 5);
 	libinput_dispatch(li);
-	litest_button_click(touchpad, BTN_LEFT, true);
+	litest_button_click_debounced(touchpad, li, BTN_LEFT, true);
 	libinput_dispatch(li);
 
 	event = libinput_get_event(li);
@@ -271,7 +271,7 @@ START_TEST(trackpoint_topsoftbuttons_left_handed_both)
 	ck_assert(device == trackpoint->libinput_device);
 	libinput_event_destroy(event);
 
-	litest_button_click(touchpad, BTN_LEFT, false);
+	litest_button_click_debounced(touchpad, li, BTN_LEFT, false);
 	libinput_dispatch(li);
 	event = libinput_get_event(li);
 	litest_is_button_event(event,
@@ -379,8 +379,36 @@ START_TEST(trackpoint_palmdetect_require_min_events)
 }
 END_TEST
 
-void
-litest_setup_tests_trackpoint(void)
+START_TEST(trackpoint_palmdetect_require_min_events_timeout)
+{
+	struct litest_device *trackpoint = litest_current_device();
+	struct litest_device *touchpad;
+	struct libinput *li = trackpoint->libinput;
+
+	touchpad = litest_add_device(li, LITEST_SYNAPTICS_I2C);
+	litest_drain_events(li);
+
+	for (int i = 0; i < 10; i++) {
+		/* A single event does not trigger palm detection */
+		litest_event(trackpoint, EV_REL, REL_X, 1);
+		litest_event(trackpoint, EV_REL, REL_Y, 1);
+		litest_event(trackpoint, EV_SYN, SYN_REPORT, 0);
+		libinput_dispatch(li);
+		litest_drain_events(li);
+
+		litest_touch_down(touchpad, 0, 30, 30);
+		litest_touch_move_to(touchpad, 0, 30, 30, 80, 80, 10, 1);
+		litest_touch_up(touchpad, 0);
+		litest_assert_only_typed_events(li, LIBINPUT_EVENT_POINTER_MOTION);
+
+		litest_timeout_trackpoint();
+	}
+
+	litest_delete_device(touchpad);
+}
+END_TEST
+
+TEST_COLLECTION(trackpoint)
 {
 	litest_add("trackpoint:middlebutton", trackpoint_middlebutton, LITEST_POINTINGSTICK, LITEST_ANY);
 	litest_add("trackpoint:middlebutton", trackpoint_middlebutton_noscroll, LITEST_POINTINGSTICK, LITEST_ANY);
@@ -393,4 +421,5 @@ litest_setup_tests_trackpoint(void)
 	litest_add("trackpoint:palmdetect", trackpoint_palmdetect, LITEST_POINTINGSTICK, LITEST_ANY);
 	litest_add("trackpoint:palmdetect", trackpoint_palmdetect_resume_touch, LITEST_POINTINGSTICK, LITEST_ANY);
 	litest_add("trackpoint:palmdetect", trackpoint_palmdetect_require_min_events, LITEST_POINTINGSTICK, LITEST_ANY);
+	litest_add("trackpoint:palmdetect", trackpoint_palmdetect_require_min_events_timeout, LITEST_POINTINGSTICK, LITEST_ANY);
 }

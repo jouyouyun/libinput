@@ -98,7 +98,7 @@ wacom_handle_ekr(struct udev_device *device,
 {
 	struct udev *udev;
 	struct udev_enumerate *e;
-	struct udev_list_entry *entry;
+	struct udev_list_entry *entry = NULL;
 	int best_dist = -1;
 
 	udev = udev_device_get_udev(device);
@@ -216,11 +216,10 @@ int main(int argc, char **argv)
 #endif
 	    snprintf(group,
 		     sizeof(group),
-		     "%x/%x/%x/%x:%s",
+		     "%x/%x/%x:%s",
 		     bustype,
 		     vendor_id,
 		     product_id,
-		     version,
 		     phys);
 	}
 

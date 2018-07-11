@@ -29,6 +29,7 @@
 #include "config.h"
 
 #include <stdbool.h>
+#include <stdarg.h>
 #include "linux/input.h"
 #include <libevdev/libevdev.h>
 
@@ -41,13 +42,14 @@
 
 enum evdev_event_type {
 	EVDEV_NONE,
-	EVDEV_ABSOLUTE_TOUCH_DOWN,
-	EVDEV_ABSOLUTE_MOTION,
-	EVDEV_ABSOLUTE_TOUCH_UP,
-	EVDEV_ABSOLUTE_MT_DOWN,
-	EVDEV_ABSOLUTE_MT_MOTION,
-	EVDEV_ABSOLUTE_MT_UP,
-	EVDEV_RELATIVE_MOTION,
+	EVDEV_ABSOLUTE_TOUCH_DOWN = (1 << 0),
+	EVDEV_ABSOLUTE_MOTION = (1 << 1),
+	EVDEV_ABSOLUTE_TOUCH_UP = (1 << 2),
+	EVDEV_ABSOLUTE_MT= (1 << 3),
+	EVDEV_WHEEL = (1 << 4),
+	EVDEV_KEY = (1 << 5),
+	EVDEV_RELATIVE_MOTION = (1 << 6),
+	EVDEV_BUTTON = (1 << 7),
 };
 
 enum evdev_device_seat_capability {
@@ -70,6 +72,7 @@ enum evdev_device_tags {
 	EVDEV_TAG_INTERNAL_KEYBOARD = (1 << 6),
 	EVDEV_TAG_EXTERNAL_KEYBOARD = (1 << 7),
 	EVDEV_TAG_TABLET_MODE_SWITCH = (1 << 8),
+	EVDEV_TAG_TABLET_TOUCHPAD = (1 << 9),
 };
 
 enum evdev_middlebutton_state {
@@ -107,8 +110,9 @@ enum evdev_device_model {
 	EVDEV_MODEL_WACOM_TOUCHPAD = (1 << 7),
 	EVDEV_MODEL_ALPS_TOUCHPAD = (1 << 8),
 	EVDEV_MODEL_SYNAPTICS_SERIAL_TOUCHPAD = (1 << 9),
-	EVDEV_MODEL_JUMPING_SEMI_MT = (1 << 10),
+	EVDEV_MODEL_BOUNCING_KEYS = (1 << 11),
 	EVDEV_MODEL_LENOVO_X220_TOUCHPAD_FW81 = (1 << 12),
+	EVDEV_MODEL_LENOVO_CARBON_X1_6TH = (1 << 13),
 	EVDEV_MODEL_CYBORG_RAT = (1 << 14),
 	EVDEV_MODEL_HP_STREAM11_TOUCHPAD = (1 << 16),
 	EVDEV_MODEL_LENOVO_T450_TOUCHPAD= (1 << 17),
@@ -122,6 +126,9 @@ enum evdev_device_model {
 	EVDEV_MODEL_APPLE_TOUCHPAD_ONEBUTTON = (1 << 25),
 	EVDEV_MODEL_LOGITECH_MARBLE_MOUSE = (1 << 26),
 	EVDEV_MODEL_TABLET_NO_PROXIMITY_OUT = (1 << 27),
+	EVDEV_MODEL_TABLET_NO_TILT = (1 << 29),
+	EVDEV_MODEL_TABLET_MODE_NO_SUSPEND = (1 << 30),
+	EVDEV_MODEL_LENOVO_SCROLLPOINT = (1 << 31),
 };
 
 enum evdev_button_scroll_state {
@@ -150,7 +157,16 @@ enum evdev_debounce_state {
 	DEBOUNCE_ACTIVE,
 };
 
+enum mt_slot_state {
+	SLOT_STATE_NONE,
+	SLOT_STATE_BEGIN,
+	SLOT_STATE_UPDATE,
+	SLOT_STATE_END,
+};
+
 struct mt_slot {
+	bool dirty;
+	enum mt_slot_state state;
 	int32_t seat_slot;
 	struct device_coords point;
 	struct device_coords hysteresis_center;
@@ -312,7 +328,8 @@ struct evdev_dispatch_interface {
 	 * enable/disable touch capabilities */
 	void (*toggle_touch)(struct evdev_dispatch *dispatch,
 			     struct evdev_device *device,
-			     bool enable);
+			     bool enable,
+			     uint64_t now);
 
 	/* Return the state of the given switch */
 	enum libinput_switch_state
@@ -363,6 +380,9 @@ evdev_init_calibration(struct evdev_device *device,
 
 void
 evdev_read_calibration_prop(struct evdev_device *device);
+
+int
+evdev_read_fuzz_prop(struct evdev_device *device, unsigned int code);
 
 enum switch_reliability
 evdev_read_switch_reliability_prop(struct evdev_device *device);
@@ -444,6 +464,9 @@ evdev_device_has_button(struct evdev_device *device, uint32_t code);
 
 int
 evdev_device_has_key(struct evdev_device *device, uint32_t code);
+
+int
+evdev_device_get_touch_count(struct evdev_device *device);
 
 int
 evdev_device_has_switch(struct evdev_device *device,
@@ -564,6 +587,17 @@ evdev_convert_to_mm(const struct input_absinfo *absinfo, double v)
 	return value/absinfo->resolution;
 }
 
+static inline struct phys_coords
+evdev_convert_xy_to_mm(const struct evdev_device *device, int x, int y)
+{
+	struct phys_coords mm;
+
+	mm.x = evdev_convert_to_mm(device->abs.absinfo_x, x);
+	mm.y = evdev_convert_to_mm(device->abs.absinfo_y, y);
+
+	return mm;
+}
+
 void
 evdev_init_left_handed(struct evdev_device *device,
 		       void (*change_to_left_handed)(struct evdev_device *));
@@ -588,11 +622,11 @@ evdev_to_left_handed(struct evdev_device *device,
  * Apply a hysteresis filtering to the coordinate in, based on the current
  * hysteresis center and the margin. If 'in' is within 'margin' of center,
  * return the center (and thus filter the motion). If 'in' is outside,
- * return a point on the edge of the new margin. So for a point x in the
- * space outside c + margin we return r:
- * +---+       +---+
+ * return a point on the edge of the new margin (which is an ellipse, usually
+ * a circle). So for a point x in the space outside c + margin we return r:
+ * ,---.       ,---.
  * | c |  x →  | r x
- * +---+       +---+
+ * `---'       `---'
  *
  * The effect of this is that initial small motions are filtered. Once we
  * move into one direction we lag the real coordinates by 'margin' but any
@@ -605,28 +639,71 @@ evdev_to_left_handed(struct evdev_device *device,
  * Otherwise, the center has a dead zone of size margin around it and the
  * first reachable point is the margin edge.
  *
- * Hysteresis is handled separately per axis (and the window is thus
- * rectangular, not circular). It is unkown if that's an issue, but the
- * calculation to do circular hysteresis are nontrivial, especially since
- * many touchpads have uneven x/y resolutions.
- *
  * @param in The input coordinate
  * @param center Current center of the hysteresis
  * @param margin Hysteresis width (on each side)
  *
  * @return The new center of the hysteresis
  */
-static inline int
-evdev_hysteresis(int in, int center, int margin)
+static inline struct device_coords
+evdev_hysteresis(const struct device_coords *in,
+		 const struct device_coords *center,
+		 const struct device_coords *margin)
 {
-	int diff = in - center;
-	if (abs(diff) <= margin)
-		return center;
+	int dx = in->x - center->x;
+	int dy = in->y - center->y;
+	int dx2 = dx * dx;
+	int dy2 = dy * dy;
+	int a = margin->x;
+	int b = margin->y;
+	double normalized_finger_distance, finger_distance, margin_distance;
+	double lag_x, lag_y;
+	struct device_coords result;
 
-	if (diff > 0)
-		return in - margin;
-	else
-		return in + margin;
+	if (!a || !b)
+		return *in;
+
+	/*
+	 * Basic equation for an ellipse of radii a,b:
+	 *   x²/a² + y²/b² = 1
+	 * But we start by making a scaled ellipse passing through the
+	 * relative finger location (dx,dy). So the scale of this ellipse is
+	 * the ratio of finger_distance to margin_distance:
+	 *   dx²/a² + dy²/b² = normalized_finger_distance²
+	 */
+	normalized_finger_distance = sqrt((double)dx2 / (a * a) +
+					  (double)dy2 / (b * b));
+
+	/* Which means anything less than 1 is within the elliptical margin */
+	if (normalized_finger_distance < 1.0)
+		return *center;
+
+	finger_distance = sqrt(dx2 + dy2);
+	margin_distance = finger_distance / normalized_finger_distance;
+
+	/*
+	 * Now calculate the x,y coordinates on the edge of the margin ellipse
+	 * where it intersects the finger vector. Shortcut: We achieve this by
+	 * finding the point with the same gradient as dy/dx.
+	 */
+	if (dx) {
+		double gradient = (double)dy / dx;
+		lag_x = margin_distance / sqrt(gradient * gradient + 1);
+		lag_y = sqrt((margin_distance + lag_x) *
+			     (margin_distance - lag_x));
+	} else {  /* Infinite gradient */
+		lag_x = 0.0;
+		lag_y = margin_distance;
+	}
+
+	/*
+	 * 'result' is the centre of an ellipse (radii a,b) which has been
+	 * dragged by the finger moving inside it to 'in'. The finger is now
+	 * touching the margin ellipse at some point: (±lag_x,±lag_y)
+	 */
+	result.x = (dx >= 0) ? in->x - lag_x : in->x + lag_x;
+	result.y = (dy >= 0) ? in->y - lag_y : in->y + lag_y;
+	return result;
 }
 
 static inline struct libinput *
@@ -642,22 +719,18 @@ evdev_log_msg_va(struct evdev_device *device,
 		 const char *format,
 		 va_list args)
 {
-	log_msg(evdev_libinput_context(device),
-		priority,
-		"%-7s - ",
-		evdev_device_get_sysname(device));
+	char buf[1024];
 
 	/* Anything info and above is user-visible, use the device name */
-	if (priority > LIBINPUT_LOG_PRIORITY_DEBUG)
-		log_msg(evdev_libinput_context(device),
-			priority,
-			"%s: ",
-			device->devname);
+	snprintf(buf,
+		 sizeof(buf),
+		 "%-7s - %s%s%s",
+		 evdev_device_get_sysname(device),
+		 (priority > LIBINPUT_LOG_PRIORITY_DEBUG) ?  device->devname : "",
+		 (priority > LIBINPUT_LOG_PRIORITY_DEBUG) ?  ": " : "",
+		 format);
 
-	log_msg_va(evdev_libinput_context(device),
-		   priority,
-		   format,
-		   args);
+	log_msg_va(evdev_libinput_context(device), priority, buf, args);
 }
 
 LIBINPUT_ATTRIBUTE_PRINTF(3, 4)
@@ -853,10 +926,25 @@ evdev_device_check_abs_axis_range(struct evdev_device *device,
 		log_info_ratelimit(evdev_libinput_context(device),
 				   &device->abs.warning_range.range_warn_limit,
 				   "Axis %#x value %d is outside expected range [%d, %d]\n"
-				   "See %s/absolute_coordinate_ranges.html for details\n",
+				   "See %sabsolute_coordinate_ranges.html for details\n",
 				   code, value, min, max,
 				   HTTP_DOC_LINK);
 	}
+}
+
+struct evdev_paired_keyboard {
+	struct list link;
+	struct evdev_device *device;
+	struct libinput_event_listener listener;
+};
+
+static inline void
+evdev_paired_keyboard_destroy(struct evdev_paired_keyboard *kbd)
+{
+	kbd->device = NULL;
+	libinput_device_remove_event_listener(&kbd->listener);
+	list_remove(&kbd->link);
+	free(kbd);
 }
 
 #endif /* EVDEV_H */

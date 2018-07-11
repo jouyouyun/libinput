@@ -26,9 +26,15 @@
 
 import sys
 import argparse
-import evdev
-import evdev.ecodes
-import pyudev
+try:
+    import evdev
+    import evdev.ecodes
+    import pyudev
+except ModuleNotFoundError as e:
+    print('Error: {}'.format(str(e)), file=sys.stderr)
+    print('One or more python modules are missing. Please install those '
+          'modules and re-run this tool.')
+    sys.exit(1)
 
 
 class Range(object):
@@ -139,6 +145,9 @@ class Device(object):
             self.path = path
 
         self.device = evdev.InputDevice(self.path)
+
+        print("Using {}: {}\n".format(self.device.name, self.path))
+
         # capabilities rturns a dict with the EV_* codes as key,
         # each of which is a list of tuples of (code, AbsInfo)
         #
@@ -154,8 +163,8 @@ class Device(object):
         prange = p.max - p.min
 
         # libinput defaults
-        self.up = int(p.min + 0.12 * prange)
-        self.down = int(p.min + 0.10 * prange)
+        self.down = int(p.min + 0.12 * prange)
+        self.up = int(p.min + 0.10 * prange)
         self.palm = 130  # the libinput default
 
         self._init_thresholds_from_udev()
@@ -180,7 +189,7 @@ class Device(object):
         ud = pyudev.Devices.from_device_file(context, self.path)
         v = ud.get('LIBINPUT_ATTR_PRESSURE_RANGE')
         if v:
-            self.up, self.down = colon_tuple(v)
+            self.down, self.up = colon_tuple(v)
 
         v = ud.get('LIBINPUT_ATTR_PALM_PRESSURE_THRESHOLD')
         if v:
@@ -284,6 +293,7 @@ def main(args):
         print("Error: failed to open device")
     except InvalidDeviceError as e:
         print("Error: {}".format(e))
+
 
 if __name__ == "__main__":
     main(sys.argv)

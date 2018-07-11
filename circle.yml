@@ -10,7 +10,7 @@ libinput_jobs:
     command: |
       rm -rf build
       meson build ${MESON_PARAMS}
-      mesonconf build
+      meson configure build
       ninja -v -C build ${NINJA_ARGS}
     environment:
       MESON_PARAMS: --prefix=/opt/libinput
@@ -41,6 +41,12 @@ libinput_jobs:
       name: Build - No docs
       environment:
         MESON_PARAMS: -Ddocumentation=false
+  build_dist: &build_dist
+    run:
+      <<: *build_and_test_default
+      name: Build - ninja dist
+      environment:
+        NINJA_ARGS: dist
   ninja_scan_build: &ninja_scan_build
     run:
       <<: *build_and_test_default
@@ -54,21 +60,6 @@ libinput_jobs:
   export_logs: &export_logs
     store_artifacts:
       path: ~/libinput/build/meson-logs
-
-# Ubuntu's meson is too old, these instructions are
-# meson-specific
-meson_from_git: &meson_from_git
-  run:
-    name: Install meson from git
-    environment:
-      MESON_VERSION: 0.41.0
-    command: |
-      git clone https://github.com/mesonbuild/meson
-      pushd meson
-      git checkout -f ${MESON_VERSION}
-      python3 ./setup.py install --prefix=/usr --install-layout=deb --install-lib=/usr/share/meson --install-scripts=/usr/share/meson
-      popd
-      rm -rf meson
 
 fedora_install: &fedora_install
   run:
@@ -88,6 +79,7 @@ fedora_build_all: &fedora_build_all
     - *build_no_debug_gui
     - *build_no_tests
     - *build_no_docs
+    - *build_dist
 
 ubuntu_install: &ubuntu_install
   run:
@@ -103,7 +95,6 @@ ubuntu_build_all: &ubuntu_build_all
   <<: *default_settings
   steps:
     - *ubuntu_install
-    - *meson_from_git # meson version not recent enough
     - checkout
     - *build_and_test
     - *install
@@ -112,6 +103,7 @@ ubuntu_build_all: &ubuntu_build_all
     - *build_no_debug_gui
     - *build_no_tests
     - *build_no_docs
+    - *build_dist
 
 scan_build_run: &scan_build_run
   <<: *default_settings
@@ -133,10 +125,10 @@ jobs:
     <<: *fedora_build_all
     docker:
       - image: fedora:latest
-  ubuntu_17_04:
+  ubuntu_17_10:
     <<: *ubuntu_build_all
     docker:
-      - image: ubuntu:zesty
+      - image: ubuntu:artful
   scan_build:
     <<: *scan_build_run
     docker:
@@ -148,4 +140,4 @@ workflows:
     jobs:
       - fedora_latest
       - scan_build
-      - ubuntu_17_04
+      - ubuntu_17_10

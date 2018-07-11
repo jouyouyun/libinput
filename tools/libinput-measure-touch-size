@@ -26,9 +26,15 @@
 
 import sys
 import argparse
-import evdev
-import evdev.ecodes
-import pyudev
+try:
+    import evdev
+    import evdev.ecodes
+    import pyudev
+except ModuleNotFoundError as e:
+    print('Error: {}'.format(str(e)), file=sys.stderr)
+    print('One or more python modules are missing. Please install those '
+          'modules and re-run this tool.')
+    sys.exit(1)
 
 
 class Range(object):
@@ -127,16 +133,6 @@ class TouchSequence(object):
         """Mark the TouchSequence as complete (finger is up)"""
         self.is_active = False
 
-    def avg(self):
-        """Average pressure value of this sequence"""
-        return int(sum([p.pressure for p in self.points])/len(self.points))
-
-    def median(self):
-        """Median pressure value of this sequence"""
-        ps = sorted([p.pressure for p in self.points])
-        idx = int(len(self.points)/2)
-        return ps[idx]
-
     def __str__(self):
         return self._str_state() if self.is_active else self._str_summary()
 
@@ -180,11 +176,14 @@ class Device(object):
             self.path = path
 
         self.device = evdev.InputDevice(self.path)
+
+        print("Using {}: {}\n".format(self.device.name, self.path))
+
         # capabilities returns a dict with the EV_* codes as key,
         # each of which is a list of tuples of (code, AbsInfo)
         #
         # Get the abs list first (or empty list if missing),
-        # then extract the pressure absinfo from that
+        # then extract the touch major absinfo from that
         caps = self.device.capabilities(absinfo=True).get(
                 evdev.ecodes.EV_ABS, []
                )
@@ -225,7 +224,7 @@ class Device(object):
         ud = pyudev.Devices.from_device_file(context, self.path)
         v = ud.get('LIBINPUT_ATTR_TOUCH_SIZE_RANGE')
         if v:
-            self.up, self.down = colon_tuple(v)
+            self.down, self.up = colon_tuple(v)
 
         v = ud.get('LIBINPUT_ATTR_PALM_SIZE_THRESHOLD')
         if v:
@@ -330,6 +329,7 @@ def main(args):
         print("Error: failed to open device")
     except InvalidDeviceError as e:
         print("Error: {}".format(e))
+
 
 if __name__ == "__main__":
     main(sys.argv)

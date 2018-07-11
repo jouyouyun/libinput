@@ -27,6 +27,7 @@
 #include <check.h>
 #include <dirent.h>
 #include <errno.h>
+#include <libgen.h>
 #include <fcntl.h>
 #include <fnmatch.h>
 #include <getopt.h>
@@ -35,6 +36,7 @@
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <stdarg.h>
 #include <time.h>
 #include <unistd.h>
 #include "linux/input.h"
@@ -46,10 +48,16 @@
 #include <sys/stat.h>
 #include <sys/types.h>
 #include <libudev.h>
+#if HAVE_LIBSYSTEMD
+#include <systemd/sd-bus.h>
+#endif
 
 #include "litest.h"
 #include "litest-int.h"
 #include "libinput-util.h"
+#include "quirks.h"
+
+#include <linux/kd.h>
 
 #define UDEV_RULES_D "/run/udev/rules.d"
 #define UDEV_RULE_PREFIX "99-litest-"
@@ -69,6 +77,7 @@ static int verbose = 0;
 const char *filter_test = NULL;
 const char *filter_device = NULL;
 const char *filter_group = NULL;
+static struct quirks_context *quirks_context;
 
 struct created_file {
 	struct list link;
@@ -80,6 +89,7 @@ struct list created_files_list; /* list of all files to remove at the end of
 
 static void litest_init_udev_rules(struct list *created_files_list);
 static void litest_remove_udev_rules(struct list *created_files_list);
+static char *litest_install_quirks(struct list *created_files_list);
 
 /* defined for the litest selftest */
 #ifndef LITEST_DISABLE_BACKTRACE_LOGGING
@@ -631,7 +641,6 @@ litest_log_handler(struct libinput *libinput,
 		   va_list args)
 {
 	static int is_tty = -1;
-	static bool had_newline = true;
 	const char *priority = NULL;
 	const char *color;
 
@@ -657,11 +666,7 @@ litest_log_handler(struct libinput *libinput,
 
 	if (!is_tty)
 		color = "";
-
-	if (had_newline)
-		fprintf(stderr, "%slitest %s ", color, priority);
-
-	if (strstr(format, "tap state:"))
+	else if (strstr(format, "tap:"))
 		color = ANSI_BLUE;
 	else if (strstr(format, "thumb state:"))
 		color = ANSI_YELLOW;
@@ -673,21 +678,23 @@ litest_log_handler(struct libinput *libinput,
 	else if (strstr(format, "palm:") ||
 		 strstr(format, "thumb:"))
 		color = ANSI_CYAN;
-	else if (strstr(format, "edge state:"))
+	else if (strstr(format, "edge-scroll:"))
 		color = ANSI_BRIGHT_GREEN;
 
-	if (is_tty)
-		fprintf(stderr, "%s ", color);
-
+	fprintf(stderr, "%slitest %s ", color, priority);
 	vfprintf(stderr, format, args);
-	had_newline = strlen(format) >= 1 &&
-		      format[strlen(format) - 1] == '\n';
-	if (is_tty && had_newline)
+	if (is_tty)
 		fprintf(stderr, ANSI_NORMAL);
 
 	if (strstr(format, "client bug: ") ||
-	    strstr(format, "libinput bug: "))
+	    strstr(format, "libinput bug: ")) {
+		/* valgrind is too slow and some of our offsets are too
+		 * short, don't abort if during a valgrind run we get a
+		 * negative offset */
+		if (!getenv("USING_VALGRIND") ||
+		    !strstr(format, "offset negative"))
 		litest_abort_msg("libinput bug triggered, aborting.\n");
+	}
 }
 
 static char *
@@ -737,6 +744,7 @@ litest_signal(int sig)
 	list_for_each_safe(f, tmp, &created_files_list, link) {
 		list_remove(&f->link);
 		unlink(f->path);
+		rmdir(f->path);
 		/* in the sighandler, we can't free */
 	}
 
@@ -784,8 +792,21 @@ litest_free_test_list(struct list *tests)
 	}
 }
 
+LIBINPUT_ATTRIBUTE_PRINTF(3, 0)
+static inline void
+quirk_log_handler(struct libinput *unused,
+		  enum libinput_log_priority priority,
+		  const char *format,
+		  va_list args)
+{
+	if (priority < LIBINPUT_LOG_PRIORITY_ERROR)
+		return;
+
+	vfprintf(stderr, format, args);
+}
+
 static int
-litest_run_suite(struct list *tests, int which, int max)
+litest_run_suite(struct list *tests, int which, int max, int error_fd)
 {
 	int failed = 0;
 	SRunner *sr = NULL;
@@ -798,6 +819,12 @@ litest_run_suite(struct list *tests, int which, int max)
 	};
 	struct name *n, *tmp;
 	struct list testnames;
+
+	quirks_context = quirks_init_subsystem(getenv("LIBINPUT_DATA_DIR"),
+					       NULL,
+					       quirk_log_handler,
+					       NULL,
+					       QLOG_LIBINPUT_LOGGING);
 
 	/* Check just takes the suite/test name pointers but doesn't strdup
 	 * them - we have to keep them around */
@@ -863,12 +890,27 @@ litest_run_suite(struct list *tests, int which, int max)
 
 	srunner_run_all(sr, CK_ENV);
 	failed = srunner_ntests_failed(sr);
+	if (failed) {
+		TestResult **trs;
+
+		trs = srunner_failures(sr);
+		for (int i = 0; i < failed; i++) {
+			dprintf(error_fd,
+				":: Failure: %s:%d:%s\n",
+				tr_lfile(trs[i]),
+				tr_lno(trs[i]),
+				tr_tcname(trs[i]));
+		}
+		free(trs);
+	}
 	srunner_free(sr);
 out:
 	list_for_each_safe(n, tmp, &testnames, node) {
 		free(n->name);
 		free(n);
 	}
+
+	quirks_context_unref(quirks_context);
 
 	return failed;
 }
@@ -880,14 +922,29 @@ litest_fork_subtests(struct list *tests, int max_forks)
 	int status;
 	pid_t pid;
 	int f;
+	int pipes[max_forks];
 
 	for (f = 0; f < max_forks; f++) {
+		int rc;
+		int pipefd[2];
+
+		rc = pipe2(pipefd, O_NONBLOCK|O_NONBLOCK);
+		assert(rc != -1);
+
 		pid = fork();
 		if (pid == 0) {
-			failed = litest_run_suite(tests, f, max_forks);
+			close(pipefd[0]);
+			failed = litest_run_suite(tests,
+						  f,
+						  max_forks,
+						  pipefd[1]);
+
 			litest_free_test_list(&all_tests);
 			exit(failed);
 			/* child always exits here */
+		} else {
+			pipes[f] = pipefd[0];
+			close(pipefd[1]);
 		}
 	}
 
@@ -897,13 +954,76 @@ litest_fork_subtests(struct list *tests, int max_forks)
 			failed = 1;
 	}
 
+	for (f = 0; f < max_forks; f++) {
+		char buf[1024] = {0};
+		int rc;
+
+		while ((rc = read(pipes[f], buf, sizeof(buf) - 1)) > 0) {
+			buf[rc] = '\0';
+			fprintf(stderr, "%s", buf);
+		}
+
+		close(pipes[f]);
+	}
+
 	return failed;
+}
+
+static inline int
+inhibit(void)
+{
+	int lock_fd = -1;
+#if HAVE_LIBSYSTEMD
+	sd_bus_error error = SD_BUS_ERROR_NULL;
+	sd_bus_message *m = NULL;
+	sd_bus *bus = NULL;
+	int rc;
+
+	rc = sd_bus_open_system(&bus);
+	if (rc != 0) {
+		fprintf(stderr, "Warning: inhibit failed: %s\n", strerror(-rc));
+		goto out;
+	}
+
+	rc = sd_bus_call_method(bus,
+				"org.freedesktop.login1",
+				"/org/freedesktop/login1",
+				"org.freedesktop.login1.Manager",
+				"Inhibit",
+				&error,
+				&m,
+				"ssss",
+				"handle-lid-switch:handle-power-key:handle-suspend-key:handle-hibernate-key",
+				"libinput test-suite runner",
+				"testing in progress",
+				"block");
+	if (rc < 0) {
+		fprintf(stderr, "Warning: inhibit failed: %s\n", error.message);
+		goto out;
+	}
+
+	rc = sd_bus_message_read(m, "h", &lock_fd);
+	if (rc < 0) {
+		fprintf(stderr, "Warning: inhibit failed: %s\n", strerror(-rc));
+		goto out;
+	}
+
+	lock_fd = dup(lock_fd);
+out:
+	sd_bus_error_free(&error);
+	sd_bus_message_unref(m);
+	sd_bus_close(bus);
+	sd_bus_unref(bus);
+#endif
+	return lock_fd;
 }
 
 static inline int
 litest_run(int argc, char **argv)
 {
 	int failed = 0;
+	int inhibit_lock_fd;
+	char *quirks_dir;
 
 	list_init(&created_files_list);
 
@@ -917,13 +1037,21 @@ litest_run(int argc, char **argv)
 		verbose = 1;
 
 	litest_init_udev_rules(&created_files_list);
+	quirks_dir = litest_install_quirks(&created_files_list);
+
+	setenv("LIBINPUT_DATA_DIR", quirks_dir, 1);
+	free(quirks_dir);
 
 	litest_setup_sighandler(SIGINT);
 
+	inhibit_lock_fd = inhibit();
+
 	if (jobs == 1)
-		failed = litest_run_suite(&all_tests, 1, 1);
+		failed = litest_run_suite(&all_tests, 1, 1, STDERR_FILENO);
 	else
 		failed = litest_fork_subtests(&all_tests, jobs);
+
+	close(inhibit_lock_fd);
 
 	litest_free_test_list(&all_tests);
 
@@ -1006,13 +1134,20 @@ litest_copy_file(const char *dest, const char *src, const char *header)
 {
 	int in, out, length;
 	struct created_file *file;
-	int suffixlen;
 
 	file = zalloc(sizeof(*file));
 	file->path = safe_strdup(dest);
 
-	suffixlen = file->path + strlen(file->path)  - rindex(file->path, '.');
-	out = mkstemps(file->path, suffixlen);
+	if (strstr(dest, "XXXXXX")) {
+		int suffixlen;
+
+		suffixlen = file->path +
+				strlen(file->path) -
+				rindex(file->path, '.');
+		out = mkstemps(file->path, suffixlen);
+	} else {
+		out = open(file->path, O_CREAT|O_WRONLY);
+	}
 	if (out == -1)
 		litest_abort_msg("Failed to write to file %s (%s)\n",
 				 file->path,
@@ -1071,20 +1206,115 @@ litest_install_model_quirks(struct list *created_files_list)
 	list_insert(created_files_list, &file->link);
 }
 
+static char *
+litest_init_device_quirk_file(const char *data_dir,
+			      struct litest_test_device *dev)
+{
+	int fd;
+	FILE *f;
+	char path[PATH_MAX];
+	static int count;
+
+	if (!dev->quirk_file)
+		return NULL;
+
+	snprintf(path, sizeof(path),
+		 "%s/99-%03d-%s.quirks",
+		 data_dir,
+		 ++count,
+		 dev->shortname);
+	fd = open(path, O_CREAT|O_WRONLY, 0644);
+	litest_assert_int_ne(fd, -1);
+	f = fdopen(fd, "w");
+	litest_assert_notnull(f);
+	litest_assert_int_ge(fputs(dev->quirk_file, f), 0);
+	fclose(f);
+
+	return safe_strdup(path);
+}
+
+
+static char *
+litest_install_quirks(struct list *created_files_list)
+{
+	struct litest_test_device **dev = devices;
+	struct created_file *file;
+	char dirname[PATH_MAX] = "/run/litest-XXXXXX";
+	char **quirks, **q;
+
+	litest_assert_notnull(mkdtemp(dirname));
+	litest_assert_int_ne(chmod(dirname, 0755), -1);
+
+	quirks = strv_from_string(LIBINPUT_DATA_FILES, ":");
+	litest_assert(quirks);
+
+	q = quirks;
+	while (*q) {
+		char *filename;
+		char dest[PATH_MAX];
+		char src[PATH_MAX];
+
+		litest_assert(strneq(*q, "data/", 5));
+		filename = &(*q)[5];
+
+		snprintf(src, sizeof(src), "%s/%s", LIBINPUT_DATA_SRCDIR, filename);
+		snprintf(dest, sizeof(dest), "%s/%s", dirname, filename);
+		file = litest_copy_file(dest, src, NULL);
+		list_append(created_files_list, &file->link);
+		q++;
+	}
+	strv_free(quirks);
+
+	/* Now add the per-device special config files */
+
+	while (*dev) {
+		char *path;
+
+		path = litest_init_device_quirk_file(dirname, *dev);
+		if (path) {
+			struct created_file *file = zalloc(sizeof(*file));
+			file->path = path;
+			list_insert(created_files_list, &file->link);
+		}
+		dev++;
+	}
+
+	file = zalloc(sizeof *file);
+	file->path = safe_strdup(dirname);
+	list_append(created_files_list, &file->link);
+
+	return safe_strdup(dirname);
+}
+
+static inline void
+mkdir_p(const char *dir)
+{
+	char *path, *parent;
+	int rc;
+
+	if (streq(dir, "/"))
+		return;
+
+	path = strdup(dir);
+	parent = dirname(path);
+
+	mkdir_p(parent);
+	rc = mkdir(dir, 0755);
+
+	if (rc == -1 && errno != EEXIST) {
+		litest_abort_msg("Failed to create directory %s (%s)\n",
+				 dir,
+				 strerror(errno));
+	}
+
+	free(path);
+}
+
 static void
 litest_init_udev_rules(struct list *created_files)
 {
-	int rc;
-
-	rc = mkdir(UDEV_RULES_D, 0755);
-	if (rc == -1 && errno != EEXIST)
-		litest_abort_msg("Failed to create udev rules directory (%s)\n",
-				 strerror(errno));
-
-	rc = mkdir(UDEV_HWDB_D, 0755);
-	if (rc == -1 && errno != EEXIST)
-		litest_abort_msg("Failed to create udev hwdb directory (%s)\n",
-				 strerror(errno));
+	mkdir_p(UDEV_RULES_D);
+	mkdir_p(UDEV_HWDB_D);
 
 	litest_install_model_quirks(created_files);
 	litest_init_all_device_udev_rules(created_files);
@@ -1099,6 +1329,7 @@ litest_remove_udev_rules(struct list *created_files_list)
 	list_for_each_safe(f, tmp, created_files_list, link) {
 		list_remove(&f->link);
 		unlink(f->path);
+		rmdir(f->path);
 		free(f->path);
 		free(f);
 	}
@@ -1113,20 +1344,22 @@ litest_init_device_udev_rules(struct litest_test_device *dev)
 	int fd;
 	FILE *f;
 	char *path = NULL;
+	static int count;
 
 	if (!dev->udev_rule)
 		return NULL;
 
 	rc = xasprintf(&path,
-		      "%s/%s%s-XXXXXX.rules",
+		      "%s/%s%03d-%s-XXXXXX.rules",
 		      UDEV_RULES_D,
 		      UDEV_RULE_PREFIX,
+		      ++count,
 		      dev->shortname);
 	litest_assert_int_eq(rc,
 			     (int)(
 				   strlen(UDEV_RULES_D) +
 				   strlen(UDEV_RULE_PREFIX) +
-				   strlen(dev->shortname) + 14));
+				   strlen(dev->shortname) + 18));
 
 	fd = mkstemps(path, 6);
 	litest_assert_int_ne(fd, -1);
@@ -1284,6 +1517,9 @@ litest_add_device_with_overrides(struct libinput *libinput,
 
 	d->libinput = libinput;
 	d->libinput_device = libinput_path_add_device(d->libinput, path);
+	d->quirks = quirks_fetch_for_device(quirks_context,
+					    libinput_device_get_udev_device(d->libinput_device));
+
 	litest_assert(d->libinput_device != NULL);
 	libinput_device_ref(d->libinput_device);
 
@@ -1332,13 +1568,82 @@ litest_create_device(enum litest_device_type which)
 	return litest_create_device_with_overrides(which, NULL, NULL, NULL, NULL);
 }
 
+static struct udev_monitor *
+udev_setup_monitor(void)
+{
+	struct udev *udev;
+	struct udev_monitor *udev_monitor;
+	int rc;
+
+	udev = udev_new();
+	litest_assert_notnull(udev);
+	udev_monitor = udev_monitor_new_from_netlink(udev, "udev");
+	litest_assert_notnull(udev_monitor);
+	udev_monitor_filter_add_match_subsystem_devtype(udev_monitor, "input",
+							NULL);
+
+
+	/* remove O_NONBLOCK */
+	rc = fcntl(udev_monitor_get_fd(udev_monitor), F_SETFL, 0);
+	litest_assert_int_ne(rc, -1);
+	litest_assert_int_eq(udev_monitor_enable_receiving(udev_monitor),
+			     0);
+	udev_unref(udev);
+
+	return udev_monitor;
+}
+
+static struct udev_device *
+udev_wait_for_device_event(struct udev_monitor *udev_monitor,
+			   const char *udev_event,
+			   const char *syspath)
+{
+	struct udev_device *udev_device = NULL;
+
+	/* blocking, we don't want to continue until udev is ready */
+	while (1) {
+		const char *udev_syspath = NULL;
+		const char *udev_action;
+
+		udev_device = udev_monitor_receive_device(udev_monitor);
+		litest_assert_notnull(udev_device);
+		udev_action = udev_device_get_action(udev_device);
+		if (!streq(udev_action, udev_event)) {
+			udev_device_unref(udev_device);
+			continue;
+		}
+
+		udev_syspath = udev_device_get_syspath(udev_device);
+		if (udev_syspath && strneq(udev_syspath,
+					   syspath,
+					   strlen(syspath)))
+			break;
+
+		udev_device_unref(udev_device);
+	}
+
+	return udev_device;
+}
+
 void
 litest_delete_device(struct litest_device *d)
 {
+
+	struct udev_monitor *udev_monitor;
+	struct udev_device *udev_device;
+	char path[PATH_MAX];
+
 	if (!d)
 		return;
 
+	udev_monitor = udev_setup_monitor();
+	snprintf(path, sizeof(path),
+		 "%s/event",
+		 libevdev_uinput_get_syspath(d->uinput));
+
 	litest_assert_int_eq(d->skip_ev_syn, 0);
+
+	quirks_unref(d->quirks);
 
 	if (d->libinput_device) {
 		libinput_path_remove_device(d->libinput_device);
@@ -1352,6 +1657,12 @@ litest_delete_device(struct litest_device *d)
 	free(d->private);
 	memset(d,0, sizeof(*d));
 	free(d);
+
+	udev_device = udev_wait_for_device_event(udev_monitor,
+						 "remove",
+						 path);
+	udev_device_unref(udev_device);
+	udev_monitor_unref(udev_monitor);
 }
 
 void
@@ -2002,9 +2313,10 @@ litest_hover_move_two_touches(struct litest_device *d,
 }
 
 void
-litest_button_click(struct litest_device *d, unsigned int button, bool is_press)
+litest_button_click(struct litest_device *d,
+		    unsigned int button,
+		    bool is_press)
 {
-
 	struct input_event *ev;
 	struct input_event click[] = {
 		{ .type = EV_KEY, .code = button, .value = is_press ? 1 : 0 },
@@ -2013,7 +2325,19 @@ litest_button_click(struct litest_device *d, unsigned int button, bool is_press)
 
 	ARRAY_FOR_EACH(click, ev)
 		litest_event(d, ev->type, ev->code, ev->value);
+}
+
+void
+litest_button_click_debounced(struct litest_device *d,
+			      struct libinput *li,
+			      unsigned int button,
+			      bool is_press)
+{
+	litest_button_click(d, button, is_press);
+
+	libinput_dispatch(li);
 	litest_timeout_debounce();
+	libinput_dispatch(li);
 }
 
 void
@@ -2023,7 +2347,7 @@ litest_button_scroll(struct litest_device *dev,
 {
 	struct libinput *li = dev->libinput;
 
-	litest_button_click(dev, button, 1);
+	litest_button_click_debounced(dev, li, button, 1);
 
 	libinput_dispatch(li);
 	litest_timeout_buttonscroll();
@@ -2033,7 +2357,7 @@ litest_button_scroll(struct litest_device *dev,
 	litest_event(dev, EV_REL, REL_Y, dy);
 	litest_event(dev, EV_SYN, SYN_REPORT, 0);
 
-	litest_button_click(dev, button, 0);
+	litest_button_click_debounced(dev, li, button, 0);
 
 	libinput_dispatch(li);
 }
@@ -2041,7 +2365,14 @@ litest_button_scroll(struct litest_device *dev,
 void
 litest_keyboard_key(struct litest_device *d, unsigned int key, bool is_press)
 {
-	litest_button_click(d, key, is_press);
+	struct input_event *ev;
+	struct input_event click[] = {
+		{ .type = EV_KEY, .code = key, .value = is_press ? 1 : 0 },
+		{ .type = EV_SYN, .code = SYN_REPORT, .value = 0 },
+	};
+
+	ARRAY_FOR_EACH(click, ev)
+		litest_event(d, ev->type, ev->code, ev->value);
 }
 
 void
@@ -2398,8 +2729,9 @@ litest_print_event(struct libinput_event *event)
 	type = libinput_event_get_type(event);
 
 	fprintf(stderr,
-		"device %s type %s ",
+		"device %s (%s) type %s ",
 		libinput_device_get_sysname(dev),
+		libinput_device_get_name(dev),
 		litest_event_get_type_str(event));
 	switch (type) {
 	case LIBINPUT_EVENT_POINTER_MOTION:
@@ -2433,7 +2765,7 @@ litest_print_event(struct libinput_event *event)
 				LIBINPUT_POINTER_AXIS_SCROLL_HORIZONTAL))
 			x = libinput_event_pointer_get_axis_value(p,
 				LIBINPUT_POINTER_AXIS_SCROLL_HORIZONTAL);
-		fprintf(stderr, "vert %.f horiz %.2f", y, x);
+		fprintf(stderr, "vert %.2f horiz %.2f", y, x);
 		break;
 	case LIBINPUT_EVENT_TABLET_TOOL_PROXIMITY:
 		t = libinput_event_get_tablet_tool_event(event);
@@ -2486,11 +2818,14 @@ litest_assert_event_type(struct libinput_event *event,
 		return;
 
 	fprintf(stderr,
-		"FAILED EVENT TYPE: have %s (%d) but want %s (%d)\n",
+		"FAILED EVENT TYPE: %s: have %s (%d) but want %s (%d)\n",
+		libinput_device_get_name(libinput_event_get_device(event)),
 		litest_event_get_type_str(event),
 		libinput_event_get_type(event),
 		litest_event_type_str(want),
 		want);
+	fprintf(stderr, "Wrong event is: ");
+	litest_print_event(event);
 	litest_backtrace();
 	abort();
 }
@@ -2628,52 +2963,22 @@ litest_create_uinput_device_from_description(const char *name,
 	const char *syspath;
 	char path[PATH_MAX];
 
-	struct udev *udev;
 	struct udev_monitor *udev_monitor;
 	struct udev_device *udev_device;
-	const char *udev_action;
-	const char *udev_syspath = NULL;
-	int rc;
 
-	udev = udev_new();
-	litest_assert_notnull(udev);
-	udev_monitor = udev_monitor_new_from_netlink(udev, "udev");
-	litest_assert_notnull(udev_monitor);
-	udev_monitor_filter_add_match_subsystem_devtype(udev_monitor, "input",
-							NULL);
-	/* remove O_NONBLOCK */
-	rc = fcntl(udev_monitor_get_fd(udev_monitor), F_SETFL, 0);
-	litest_assert_int_ne(rc, -1);
-	litest_assert_int_eq(udev_monitor_enable_receiving(udev_monitor),
-			     0);
+	udev_monitor = udev_setup_monitor();
 
 	uinput = litest_create_uinput(name, id, abs_info, events);
 
 	syspath = libevdev_uinput_get_syspath(uinput);
 	snprintf(path, sizeof(path), "%s/event", syspath);
 
-	/* blocking, we don't want to continue until udev is ready */
-	while (1) {
-		udev_device = udev_monitor_receive_device(udev_monitor);
-		litest_assert_notnull(udev_device);
-		udev_action = udev_device_get_action(udev_device);
-		if (strcmp(udev_action, "add") != 0) {
-			udev_device_unref(udev_device);
-			continue;
-		}
-
-		udev_syspath = udev_device_get_syspath(udev_device);
-		if (udev_syspath && strneq(udev_syspath, path, strlen(path)))
-			break;
-
-		udev_device_unref(udev_device);
-	}
+	udev_device = udev_wait_for_device_event(udev_monitor, "add", path);
 
 	litest_assert(udev_device_get_property_value(udev_device, "ID_INPUT"));
 
 	udev_device_unref(udev_device);
 	udev_monitor_unref(udev_monitor);
-	udev_unref(udev);
 
 	return uinput;
 }
@@ -3154,7 +3459,7 @@ litest_timeout_tapndrag(void)
 void
 litest_timeout_debounce(void)
 {
-	msleep(15);
+	msleep(30);
 }
 
 void
@@ -3220,7 +3525,19 @@ litest_timeout_trackpoint(void)
 void
 litest_timeout_tablet_proxout(void)
 {
-	msleep(70);
+	msleep(170);
+}
+
+void
+litest_timeout_touch_arbitration(void)
+{
+	msleep(100);
+}
+
+void
+litest_timeout_hysteresis(void)
+{
+	msleep(90);
 }
 
 void
@@ -3557,11 +3874,44 @@ litest_init_test_devices(void)
 	}
 }
 
+extern const struct test_collection __start_test_collection_section,
+				    __stop_test_collection_section;
+
+static void
+setup_tests(void)
+{
+	const struct test_collection *c;
+
+	for (c = &__start_test_collection_section;
+	     c < &__stop_test_collection_section;
+	     c++) {
+		c->setup();
+	}
+}
+
 int
 main(int argc, char **argv)
 {
 	const struct rlimit corelimit = { 0, 0 };
 	enum litest_mode mode;
+	int tty_mode = -1;
+	int failed_tests;
+
+	if (getuid() != 0) {
+		fprintf(stderr,
+			"%s must be run as root.\n",
+			program_invocation_short_name);
+		return 77;
+	}
+
+	if (access("/dev/uinput", F_OK) == -1 &&
+	    access("/dev/input/uinput", F_OK) == -1) {
+		fprintf(stderr,
+			"uinput device is missing, skipping tests.\n");
+		return 77;
+	}
+
+	litest_init_test_devices();
 
 	if (getuid() != 0) {
 		fprintf(stderr,
@@ -3585,23 +3935,7 @@ main(int argc, char **argv)
 	if (mode == LITEST_MODE_ERROR)
 		return EXIT_FAILURE;
 
-	litest_setup_tests_udev();
-	litest_setup_tests_path();
-	litest_setup_tests_pointer();
-	litest_setup_tests_touch();
-	litest_setup_tests_log();
-	litest_setup_tests_tablet();
-	litest_setup_tests_pad();
-	litest_setup_tests_touchpad();
-	litest_setup_tests_touchpad_tap();
-	litest_setup_tests_touchpad_buttons();
-	litest_setup_tests_trackpoint();
-	litest_setup_tests_trackball();
-	litest_setup_tests_misc();
-	litest_setup_tests_keyboard();
-	litest_setup_tests_device();
-	litest_setup_tests_gestures();
-	litest_setup_tests_lid();
+	setup_tests();
 
 	if (mode == LITEST_MODE_LIST) {
 		litest_list_tests(&all_tests);
@@ -3611,6 +3945,22 @@ main(int argc, char **argv)
 	if (setrlimit(RLIMIT_CORE, &corelimit) != 0)
 		perror("WARNING: Core dumps not disabled. Reason");
 
-	return litest_run(argc, argv);
+	/* If we're running 'normally' on the VT, disable the keyboard to
+	 * avoid messing up our host. But if we're inside gdb or running
+	 * without forking, leave it as-is.
+	 */
+	if (jobs > 1 &&
+	    !in_debugger &&
+	    getenv("CK_FORK") == NULL &&
+	    isatty(STDIN_FILENO) &&
+	    ioctl(STDIN_FILENO, KDGKBMODE, &tty_mode) == 0)
+		ioctl(STDIN_FILENO, KDSKBMODE, K_OFF);
+
+	failed_tests = litest_run(argc, argv);
+
+	if (tty_mode != -1)
+		ioctl(STDIN_FILENO, KDSKBMODE, tty_mode);
+
+	return failed_tests;
 }
 #endif

@@ -46,10 +46,11 @@ enum touchpad_event {
 
 enum touch_state {
 	TOUCH_NONE = 0,
-	TOUCH_HOVERING,
-	TOUCH_BEGIN,
-	TOUCH_UPDATE,
-	TOUCH_END
+	TOUCH_HOVERING = 1,
+	TOUCH_BEGIN = 2,
+	TOUCH_UPDATE = 3,
+	TOUCH_MAYBE_END = 4,
+	TOUCH_END = 5,
 };
 
 enum touch_palm_state {
@@ -60,6 +61,7 @@ enum touch_palm_state {
 	PALM_TOOL_PALM,
 	PALM_PRESSURE,
 	PALM_TOUCH_SIZE,
+	PALM_ARBITRATION,
 };
 
 enum button_event {
@@ -103,6 +105,7 @@ enum tp_tap_state {
 	TAP_STATE_DRAGGING_2,
 	TAP_STATE_MULTITAP,
 	TAP_STATE_MULTITAP_DOWN,
+	TAP_STATE_MULTITAP_PALM,
 	TAP_STATE_DEAD, /**< finger count exceeded */
 };
 
@@ -143,6 +146,7 @@ enum tp_thumb_state {
 
 struct tp_touch {
 	struct tp_dispatch *tp;
+	unsigned int index;
 	enum touch_state state;
 	bool has_ended;				/* TRACKING_ID == -1 */
 	bool dirty;
@@ -173,7 +177,10 @@ struct tp_touch {
 		unsigned int count;
 	} history;
 
-	struct device_coords hysteresis_center;
+	struct {
+		struct device_coords center;
+		uint8_t x_motion_history;
+	} hysteresis;
 
 	/* A pinned touchpoint is the one that pressed the physical button
 	 * on a clickpad. After the release, it won't move until the center
@@ -196,6 +203,7 @@ struct tp_touch {
 		enum tp_tap_touch_state state;
 		struct device_coords initial;
 		bool is_thumb;
+		bool is_palm;
 	} tap;
 
 	struct {
@@ -228,6 +236,14 @@ struct tp_touch {
 	} speed;
 };
 
+enum suspend_trigger {
+	SUSPEND_NO_FLAG         = 0x0,
+	SUSPEND_EXTERNAL_MOUSE  = 0x1,
+	SUSPEND_SENDEVENTS      = 0x2,
+	SUSPEND_LID             = 0x4,
+	SUSPEND_TABLET_MODE     = 0x8,
+};
+
 struct tp_dispatch {
 	struct evdev_dispatch base;
 	struct evdev_device *device;
@@ -237,9 +253,13 @@ struct tp_dispatch {
 	bool has_mt;
 	bool semi_mt;
 
-	/* true if we're reading events (i.e. not suspended) but we're
-	 * ignoring them */
-	bool ignore_events;
+	uint32_t suspend_reason;
+
+	/* pen/touch arbitration */
+	struct {
+		bool in_arbitration;
+		struct libinput_timer arbitration_timer;
+	} arbitration;
 
 	unsigned int num_slots;			/* number of slots */
 	unsigned int ntouches;			/* no slots inc. fakes */
@@ -270,11 +290,17 @@ struct tp_dispatch {
 		double orientation_to_angle;
 	} touch_size;
 
-	struct device_coords hysteresis_margin;
+	struct {
+		bool enabled;
+		struct device_coords margin;
+		unsigned int other_event_count;
+		uint64_t last_motion_time;
+	} hysteresis;
 
 	struct {
 		double x_scale_coeff;
 		double y_scale_coeff;
+		double xy_scale_coeff;
 	} accel;
 
 	struct {
@@ -352,6 +378,8 @@ struct tp_dispatch {
 
 		bool drag_enabled;
 		bool drag_lock_enabled;
+
+		unsigned int nfingers_down;	/* number of fingers down for tapping (excl. thumb/palm) */
 	} tap;
 
 	struct {
@@ -384,13 +412,17 @@ struct tp_dispatch {
 		struct libinput_device_config_dwt config;
 		bool dwt_enabled;
 
-		bool keyboard_active;
-		struct libinput_event_listener keyboard_listener;
-		struct libinput_timer keyboard_timer;
-		struct evdev_device *keyboard;
+		/* We have to allow for more than one device node to be the
+		 * internal dwt keyboard (Razer Blade). But they're the same
+		 * physical device, so we don't care about per-keyboard
+		 * key/modifier masks.
+		 */
+		struct list paired_keyboard_list;
+
 		unsigned long key_mask[NLONGS(KEY_CNT)];
 		unsigned long mod_mask[NLONGS(KEY_CNT)];
-
+		bool keyboard_active;
+		struct libinput_timer keyboard_timer;
 		uint64_t keyboard_last_press_time;
 	} dwt;
 
@@ -465,32 +497,32 @@ tp_phys_delta(const struct tp_dispatch *tp,
 }
 
 /**
- * Takes a dpi-normalized set of coordinates, returns a set of coordinates
- * in the x-axis' coordinate space.
+ * Takes a set of device coordinates, returns that set of coordinates in the
+ * x-axis' resolution.
  */
 static inline struct device_float_coords
-tp_unnormalize_for_xaxis(const struct tp_dispatch *tp,
-			 struct normalized_coords delta)
+tp_scale_to_xaxis(const struct tp_dispatch *tp,
+		  struct device_float_coords delta)
 {
 	struct device_float_coords raw;
 
-	raw.x = delta.x / tp->accel.x_scale_coeff;
-	raw.y = delta.y / tp->accel.x_scale_coeff; /* <--- not a typo */
+	raw.x = delta.x;
+	raw.y = delta.y * tp->accel.xy_scale_coeff;
 
 	return raw;
 }
 
-struct normalized_coords
+struct device_coords
 tp_get_delta(struct tp_touch *t);
 
 struct normalized_coords
 tp_filter_motion(struct tp_dispatch *tp,
-		 const struct normalized_coords *unaccelerated,
+		 const struct device_float_coords *unaccelerated,
 		 uint64_t time);
 
 struct normalized_coords
 tp_filter_motion_unaccelerated(struct tp_dispatch *tp,
-			       const struct normalized_coords *unaccelerated,
+			       const struct device_float_coords *unaccelerated,
 			       uint64_t time);
 
 bool

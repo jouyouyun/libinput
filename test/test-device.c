@@ -463,7 +463,7 @@ START_TEST(device_disable_release_buttons)
 
 	device = dev->libinput_device;
 
-	litest_button_click(dev, BTN_LEFT, true);
+	litest_button_click_debounced(dev, li, BTN_LEFT, true);
 	litest_drain_events(li);
 
 	status = libinput_device_config_send_events_set_mode(device,
@@ -497,7 +497,7 @@ START_TEST(device_disable_release_keys)
 
 	device = dev->libinput_device;
 
-	litest_button_click(dev, KEY_A, true);
+	litest_keyboard_key(dev, KEY_A, true);
 	litest_drain_events(li);
 
 	status = libinput_device_config_send_events_set_mode(device,
@@ -616,7 +616,7 @@ START_TEST(device_disable_release_softbutton)
 	litest_drain_events(li);
 
 	litest_touch_down(dev, 0, 90, 90);
-	litest_button_click(dev, BTN_LEFT, true);
+	litest_button_click_debounced(dev, li, BTN_LEFT, true);
 
 	/* make sure softbutton works */
 	litest_assert_button_event(li,
@@ -633,7 +633,7 @@ START_TEST(device_disable_release_softbutton)
 
 	litest_assert_empty_queue(li);
 
-	litest_button_click(dev, BTN_LEFT, false);
+	litest_button_click_debounced(dev, li, BTN_LEFT, false);
 	litest_touch_up(dev, 0);
 
 	litest_assert_empty_queue(li);
@@ -669,8 +669,8 @@ START_TEST(device_disable_topsoftbutton)
 	litest_drain_events(li);
 
 	litest_touch_down(dev, 0, 90, 10);
-	litest_button_click(dev, BTN_LEFT, true);
-	litest_button_click(dev, BTN_LEFT, false);
+	litest_button_click_debounced(dev, li, BTN_LEFT, true);
+	litest_button_click_debounced(dev, li, BTN_LEFT, false);
 	litest_touch_up(dev, 0);
 
 	litest_wait_for_event(li);
@@ -1141,87 +1141,6 @@ START_TEST(device_accelerometer)
 }
 END_TEST
 
-START_TEST(device_udev_tag_alps)
-{
-	struct litest_device *dev = litest_current_device();
-	struct libinput_device *device = dev->libinput_device;
-	struct udev_device *d;
-	const char *prop;
-
-	d = libinput_device_get_udev_device(device);
-	prop = udev_device_get_property_value(d,
-					      "LIBINPUT_MODEL_ALPS_TOUCHPAD");
-
-	if (strstr(libinput_device_get_name(device), "ALPS"))
-		ck_assert_notnull(prop);
-	else
-		ck_assert(prop == NULL);
-
-	udev_device_unref(d);
-}
-END_TEST
-
-START_TEST(device_udev_tag_wacom)
-{
-	struct litest_device *dev = litest_current_device();
-	struct libinput_device *device = dev->libinput_device;
-	struct udev_device *d;
-	const char *prop;
-
-	d = libinput_device_get_udev_device(device);
-	prop = udev_device_get_property_value(d,
-					      "LIBINPUT_MODEL_WACOM_TOUCHPAD");
-
-	if (libevdev_get_id_vendor(dev->evdev) == VENDOR_ID_WACOM)
-		ck_assert_notnull(prop);
-	else
-		ck_assert(prop == NULL);
-
-	udev_device_unref(d);
-}
-END_TEST
-
-START_TEST(device_udev_tag_apple)
-{
-	struct litest_device *dev = litest_current_device();
-	struct libinput_device *device = dev->libinput_device;
-	struct udev_device *d;
-	const char *prop;
-
-	d = libinput_device_get_udev_device(device);
-	prop = udev_device_get_property_value(d,
-					      "LIBINPUT_MODEL_WACOM_TOUCHPAD");
-
-	if (libevdev_get_id_vendor(dev->evdev) == VENDOR_ID_WACOM)
-		ck_assert_notnull(prop);
-	else
-		ck_assert(prop == NULL);
-
-	udev_device_unref(d);
-}
-END_TEST
-
-START_TEST(device_udev_tag_synaptics_serial)
-{
-	struct litest_device *dev = litest_current_device();
-	struct libinput_device *device = dev->libinput_device;
-	struct udev_device *d;
-	const char *prop;
-
-	d = libinput_device_get_udev_device(device);
-	prop = udev_device_get_property_value(d,
-					      "LIBINPUT_MODEL_SYNAPTICS_SERIAL_TOUCHPAD");
-
-	if (libevdev_get_id_vendor(dev->evdev) == VENDOR_ID_SYNAPTICS_SERIAL &&
-	    libevdev_get_id_product(dev->evdev) == PRODUCT_ID_SYNAPTICS_SERIAL)
-		ck_assert_notnull(prop);
-	else
-		ck_assert(prop == NULL);
-
-	udev_device_unref(d);
-}
-END_TEST
-
 START_TEST(device_udev_tag_wacom_tablet)
 {
 	struct litest_device *dev = litest_current_device();
@@ -1577,8 +1496,7 @@ START_TEST(device_seat_phys_name)
 }
 END_TEST
 
-void
-litest_setup_tests_device(void)
+TEST_COLLECTION(device)
 {
 	struct range abs_range = { 0, ABS_MISC };
 	struct range abs_mt_range = { ABS_MT_SLOT + 1, ABS_CNT };
@@ -1628,10 +1546,6 @@ litest_setup_tests_device(void)
 	litest_add("device:wheel", device_wheel_only, LITEST_WHEEL, LITEST_RELATIVE|LITEST_ABSOLUTE|LITEST_TABLET);
 	litest_add_no_device("device:accelerometer", device_accelerometer);
 
-	litest_add("device:udev tags", device_udev_tag_alps, LITEST_TOUCHPAD, LITEST_ANY);
-	litest_add("device:udev tags", device_udev_tag_wacom, LITEST_TOUCHPAD, LITEST_ANY);
-	litest_add("device:udev tags", device_udev_tag_apple, LITEST_TOUCHPAD, LITEST_ANY);
-	litest_add("device:udev tags", device_udev_tag_synaptics_serial, LITEST_TOUCHPAD, LITEST_ANY);
 	litest_add("device:udev tags", device_udev_tag_wacom_tablet, LITEST_TABLET, LITEST_ANY);
 
 	litest_add_no_device("device:invalid rel events", device_nonpointer_rel);

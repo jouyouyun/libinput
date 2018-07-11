@@ -31,6 +31,7 @@ extern "C" {
 
 #include <stdlib.h>
 #include <stdint.h>
+#include <stdarg.h>
 #include <libudev.h>
 
 #define LIBINPUT_ATTRIBUTE_PRINTF(_format, _args) \
@@ -3718,6 +3719,20 @@ libinput_device_keyboard_has_key(struct libinput_device *device,
 /**
  * @ingroup device
  *
+ * Check how many touches a @ref LIBINPUT_DEVICE_CAP_TOUCH device supports
+ * simultaneously.
+ *
+ * @param device A current input device
+ *
+ * @return The number of simultaneous touches or 0 if unknown, -1
+ * on error.
+ */
+int
+libinput_device_touch_get_touch_count(struct libinput_device *device);
+
+/**
+ * @ingroup device
+ *
  * Check if a @ref LIBINPUT_DEVICE_CAP_SWITCH device has a switch of the
  * given type.
  *
@@ -4327,7 +4342,7 @@ libinput_device_config_calibration_get_matrix(struct libinput_device *device,
  *
  * @see libinput_device_config_calibration_has_matrix
  * @see libinput_device_config_calibration_set_matrix
- * @see libinput_device_config_calibration_get_default_matrix
+ * @see libinput_device_config_calibration_get_matrix
  */
 int
 libinput_device_config_calibration_get_default_matrix(struct libinput_device *device,
