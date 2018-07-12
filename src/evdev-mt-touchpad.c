@@ -1949,31 +1949,6 @@ tp_resume(struct tp_dispatch *tp,
 	tp_sync_slots(tp, device);
 }
 
-#define NO_EXCLUDED_DEVICE NULL
-static void
-tp_resume_conditional(struct tp_dispatch *tp,
-		      struct evdev_device *device,
-		      struct evdev_device *excluded_device)
-{
-	if (tp->sendevents.current_mode == LIBINPUT_CONFIG_SEND_EVENTS_DISABLED)
-		return;
-
-	if (tp->sendevents.current_mode ==
-		    LIBINPUT_CONFIG_SEND_EVENTS_DISABLED_ON_EXTERNAL_MOUSE) {
-		struct libinput_device *dev;
-
-		list_for_each(dev, &device->base.seat->devices_list, link) {
-			struct evdev_device *d = evdev_device(dev);
-			if (d != excluded_device &&
-			    (d->tags & EVDEV_TAG_EXTERNAL_MOUSE)) {
-				return;
-			}
-		}
-	}
-
-	tp_resume(tp, device);
-}
-
 static void
 tp_trackpoint_timeout(uint64_t now, void *data)
 {

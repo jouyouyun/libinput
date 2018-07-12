@@ -75,30 +75,6 @@ struct test_collection {
 	}; \
 	static void (name##_setup)(void)
 
-struct test_device {
-	const char *name;
-	struct litest_test_device *device;
-} __attribute__((aligned(16)));
-
-#define TEST_DEVICE(name, ...) \
-	static struct litest_test_device _device; \
-	\
-	static void _setup(void) { \
-		struct litest_device *d = litest_create_device(_device.type); \
-		litest_set_current_device(d); \
-	} \
-	\
-	static const struct test_device _test_device \
-		__attribute__ ((used)) \
-		__attribute__ ((section ("test_section"))) = { \
-		name, &_device \
-	}; \
-	static struct litest_test_device _device = { \
-		.setup = _setup, \
-		.shortname = name, \
-		__VA_ARGS__ \
-	};
-
 extern void litest_setup_tests_udev(void);
 extern void litest_setup_tests_path(void);
 extern void litest_setup_tests_pointer(void);

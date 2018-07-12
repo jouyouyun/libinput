@@ -377,9 +377,11 @@ tp_gesture_handle_state_unknown(struct tp_dispatch *tp, uint64_t time)
 	dir1 = tp_gesture_get_direction(tp, first, tp->gesture.finger_count);
 	dir2 = tp_gesture_get_direction(tp, second, tp->gesture.finger_count);
 	if (dir1 == UNDEFINED_DIRECTION || dir2 == UNDEFINED_DIRECTION) {
+		struct device_float_coords raw;
 		struct normalized_coords delta, unaccel;
-		unaccel = tp_get_average_touches_delta(tp);
-		delta = tp_filter_motion(tp, &unaccel, time);
+		raw = tp_get_average_touches_delta(tp);
+		delta = tp_filter_motion(tp, &raw, time);
+		unaccel = tp_normalize_delta(tp, raw);
 		if (normalized_is_zero(delta) && normalized_is_zero(unaccel) &&
 			time < (tp->gesture.initial_time + DEFAULT_GESTURE_TAP_TIMEOUT)) {
 			// TODO: check tap whether enabled
@@ -456,6 +458,7 @@ tp_gesture_handle_state_swipe(struct tp_dispatch *tp, uint64_t time)
 static enum tp_gesture_state
 tp_gesture_handle_state_tap(struct tp_dispatch *tp, uint64_t time)
 {
+	struct device_float_coords raw;
 	struct normalized_coords delta, unaccel;
 	struct tp_touch *first = tp->gesture.touches[0],
 			*second = tp->gesture.touches[1];
@@ -465,8 +468,9 @@ tp_gesture_handle_state_tap(struct tp_dispatch *tp, uint64_t time)
 		goto out;
 	}
 
-	unaccel = tp_get_average_touches_delta(tp);
-	delta = tp_filter_motion(tp, &unaccel, time);
+	raw = tp_get_average_touches_delta(tp);
+	delta = tp_filter_motion(tp, &raw, time);
+	unaccel = tp_normalize_delta(tp, raw);
 	if (normalized_is_zero(delta) && normalized_is_zero(unaccel)) {
 		tp_gesture_start(tp, time);
 		gesture_notify_tap(&tp->device->base, time,

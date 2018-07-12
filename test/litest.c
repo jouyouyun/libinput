@@ -2681,6 +2681,15 @@ litest_event_type_str(enum libinput_event_type type)
 	case LIBINPUT_EVENT_GESTURE_PINCH_END:
 		str = "GESTURE PINCH END";
 		break;
+	case LIBINPUT_EVENT_GESTURE_TAP_BEGIN:
+		str = "GESTURE TAP START";
+		break;
+	case LIBINPUT_EVENT_GESTURE_TAP_UPDATE:
+		str = "GESTURE TAP UPDATE";
+		break;
+	case LIBINPUT_EVENT_GESTURE_TAP_END:
+		str = "GESTURE TAP END";
+		break;
 	case LIBINPUT_EVENT_TABLET_TOOL_AXIS:
 		str = "TABLET TOOL AXIS";
 		break;
